@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 utachat-shared = { path = "../shared" }
-gpui_kit = { package = "gpui-ce-kit", version = "=0.3.0" }
+gpui_kit = { package = "gpui_ce_kit", version = "=0.3.0" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1.48", features = ["rt", "time", "sync", "macros", "net"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
