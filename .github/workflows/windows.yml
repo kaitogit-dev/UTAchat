@@ -18,6 +18,8 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Build Windows binaries
         shell: pwsh
         run: cargo build --release -p utachat -p utachat-server --target x86_64-pc-windows-msvc
