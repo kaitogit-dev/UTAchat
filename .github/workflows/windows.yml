@@ -113,17 +113,14 @@ jobs:
           $subsystem = [BitConverter]::ToUInt16($bytes, $header + 24 + 68)
           if ($subsystem -ne 2) { throw "UTAchat.exe must be a GUI application" }
       - name: Package online client
-        if: ${{ vars.UTACHAT_API_URL != '' }}
-        env:
-          UTACHAT_API_URL: ${{ vars.UTACHAT_API_URL }}
         shell: pwsh
         run: |
-          if (-not $env:UTACHAT_API_URL.StartsWith("https://")) { throw "Online API URL must be HTTPS" }
+          $config = Get-Content config.json -Raw | ConvertFrom-Json
+          if (-not $config.api_url.StartsWith("https://")) { throw "Online API URL must be HTTPS" }
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/utachat.exe dist/UTAchat.exe
-          @{ api_url = $env:UTACHAT_API_URL.TrimEnd("/") } | ConvertTo-Json | Set-Content dist/config.json
+          Copy-Item config.json dist/config.json
       - uses: actions/upload-artifact@v4
-        if: ${{ vars.UTACHAT_API_URL != '' }}
         with:
           name: UTAchat-Windows-x64
           path: dist/
