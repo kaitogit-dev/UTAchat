@@ -1,6 +1,7 @@
 use std::{sync::mpsc::TryRecvError, time::Duration};
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use uuid::Uuid;
 use utachat_shared::{AuthResponse, Channel, ChatMessage, GatewayMessage, Member, PublicUser, Server};
@@ -369,7 +370,7 @@ impl UTAchat {
             .map(|s| s.name.clone()).unwrap_or_else(|| "No server selected".into());
         let can_create = self.selected_server.and_then(|id| self.servers.iter().find(|s| s.id == id))
             .zip(self.user.as_ref()).is_some_and(|(s, u)| s.owner_id == u.id);
-        let mut channel_list = div().flex_1().min_h_0().overflow_y_scrollbar().p_3().flex().flex_col().gap_1()
+        let mut channel_list = div().id("channel-scroll").flex_1().min_h_0().overflow_y_scrollbar().p_3().flex().flex_col().gap_1()
             .child(div().h(px(30.)).px_2().flex().items_center().justify_between()
                 .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(MUTED)).child("TEXT CHANNELS"))
                 .when(can_create, |header| header.child(div().id("create-channel-trigger").cursor_pointer()
@@ -413,7 +414,7 @@ impl UTAchat {
     fn render_chat(&self, cx: &mut Context<Self>) -> AnyElement {
         let current_channel = self.selected_channel.and_then(|id| self.channels.iter().find(|c| c.id == id));
         let channel_name = current_channel.map(|c| c.name.as_str()).unwrap_or("Select a channel");
-        let mut stream = div().flex_1().min_h_0().overflow_y_scrollbar().track_scroll(&self.chat_scroll).px_5().py_4().flex().flex_col().gap_1();
+        let mut stream = div().id("message-scroll").flex_1().min_h_0().track_scroll(&self.chat_scroll).overflow_y_scrollbar().px_5().py_4().flex().flex_col().gap_1();
         if self.has_older && self.selected_channel.is_some() {
             stream = stream.child(div().id("older-trigger").h(px(32.)).mb_4().flex().items_center().justify_center()
                 .text_xs().text_color(rgb(0xaeb6ff)).cursor_pointer().child("Load earlier messages")
