@@ -517,7 +517,7 @@ impl UTAchat {
                     .child(div().text_sm().child(name))
                     .child(div().id(format!("accept-friend-{id}")).text_xs().text_color(rgb(0x5ad4a0))
                         .cursor_pointer().child("ACCEPT")
-                        .on_click(cx.listener(move |this, _, _, cx| this.issue(Command::AcceptFriend(id)))));
+                        .on_click(cx.listener(move |this, _, _, cx| this.issue(Command::AcceptFriend(id))))));
             } else {
                 list = list.child(div().h(px(34.)).px_3().flex().items_center().justify_between()
                     .child(div().text_sm().text_color(rgb(MUTED)).child(name))
@@ -543,7 +543,7 @@ impl UTAchat {
                         cx.notify();
                     })))
                 .child(div().id("dm-logout").text_xs().cursor_pointer().text_color(rgb(MUTED))
-                    .child("EXIT").on_click(cx.listener(|this, _, _, cx| this.issue(Command::Logout))))
+                    .child("EXIT").on_click(cx.listener(|this, _, _, cx| this.issue(Command::Logout)))))
         .into_any_element()
     }
 
@@ -836,7 +836,7 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
         .when(!continuation, |el| el.child(div().flex().items_center().gap_3()
             .child(div().text_sm().font_weight(FontWeight::BOLD).child(message.author.username.clone()))
             .child(div().text_xs().text_color(rgb(SUBTLE)).child(message.created_at.format("%d %b %Y, %H:%M").to_string()))
-            .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(SUBTLE)).child("edited"))))
+            .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(SUBTLE)).child("edited")))))
         .when_some(message.reply_to, |el, replied| el.child(div().text_xs().text_color(rgb(0xaeb6ff))
             .child(format!("Reply to {}", &replied.to_string()[..8]))))
         .child(div().text_sm().text_color(rgb(0xe6e7eb)).child(message.content.clone()));
