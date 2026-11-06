@@ -1,5 +1,7 @@
 mod auth;
 mod data;
+mod direct;
+mod message_actions;
 mod error;
 mod gateway;
 
@@ -8,6 +10,7 @@ use axum::{Router, routing::{get, post}};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::sync::broadcast;
 use utachat_shared::GatewayMessage;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -16,9 +19,25 @@ pub struct AppState {
 }
 
 #[derive(Clone)]
+pub enum BroadcastTarget {
+    Server(Uuid),
+    Users(Vec<Uuid>),
+}
+
+#[derive(Clone)]
 pub struct Broadcast {
-    pub server_id: uuid::Uuid,
+    pub target: BroadcastTarget,
     pub event: GatewayMessage,
+}
+
+impl Broadcast {
+    pub fn server(server_id: Uuid, event: GatewayMessage) -> Self {
+        Self { target: BroadcastTarget::Server(server_id), event }
+    }
+
+    pub fn users(users: Vec<Uuid>, event: GatewayMessage) -> Self {
+        Self { target: BroadcastTarget::Users(users), event }
+    }
 }
 
 #[tokio::main]
@@ -47,6 +66,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/servers/{server}/invite", get(data::get_invite))
         .route("/v1/invites/{code}/join", post(data::join_invite))
         .route("/v1/channels/{channel}/messages", get(data::list_messages).post(data::send_message))
+        .route("/v1/channels/{channel}/messages/{message}", axum::routing::patch(message_actions::edit).delete(message_actions::delete))
+        .route("/v1/channels/{channel}/messages/{message}/reactions", post(message_actions::react))
+        .route("/v1/friends", get(direct::friends))
+        .route("/v1/friends/requests", post(direct::request_friend))
+        .route("/v1/friends/{peer}/accept", post(direct::accept_friend))
+        .route("/v1/friends/{peer}", axum::routing::delete(direct::remove_friend))
+        .route("/v1/dms", get(direct::list_threads).post(direct::create_thread))
+        .route("/v1/dms/{thread}/messages", get(direct::list_messages).post(direct::send_message))
+        .route("/v1/dms/{thread}/messages/{message}", axum::routing::patch(direct::edit_message).delete(direct::delete_message))
         .route("/v1/gateway", get(gateway::upgrade))
         .with_state(state);
     let address: SocketAddr = match env::var("UTACHAT_LISTEN_ADDR") {

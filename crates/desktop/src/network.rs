@@ -5,7 +5,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{mpsc as async_mpsc, watch};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
-use utachat_shared::{ApiError, AuthResponse, Channel, ChatMessage, CredentialRequest, GatewayMessage, InviteResponse, Member, MessageRequest, NameRequest, PublicUser, Server};
+use utachat_shared::{ApiError, AuthResponse, Channel, ChatMessage, CredentialRequest, GatewayMessage, InviteResponse, Member, MessageRequest, NameRequest, PublicUser, Server, DirectRequest, DirectThread, Friend, EditMessageRequest, ReactionRequest};
 
 #[derive(Clone)]
 pub enum Command {
@@ -16,11 +16,23 @@ pub enum Command {
     SelectServer(Uuid),
     SelectChannel(Uuid),
     LoadOlder { channel: Uuid, before: Uuid },
-    SendMessage { channel: Uuid, content: String },
+    SendMessage { channel: Uuid, content: String, reply_to: Option<Uuid> },
     CreateServer(String),
     CreateChannel { server: Uuid, name: String },
     JoinInvite(String),
     FetchInvite(Uuid),
+    FetchDirects,
+    FetchFriends,
+    CreateDirect(String),
+    AddFriend(String),
+    AcceptFriend(Uuid),
+    RemoveFriend(Uuid),
+    SelectDirect(Uuid),
+    LoadOlderDirect { thread: Uuid, before: Uuid },
+    SendDirect { thread: Uuid, content: String, reply_to: Option<Uuid> },
+    EditMessage { channel: Uuid, message: Uuid, content: String, direct: bool },
+    DeleteMessage { channel: Uuid, message: Uuid, direct: bool },
+    React { channel: Uuid, message: Uuid, kind: String },
 }
 
 pub enum UiEvent {
@@ -36,6 +48,12 @@ pub enum UiEvent {
     CreatedChannel(Channel),
     JoinedServer(Server),
     InviteCode(String),
+    DirectThreads(Vec<DirectThread>),
+    Friends(Vec<Friend>),
+    DirectCreated(DirectThread),
+    MessageUpdated(ChatMessage),
+    MessageDeleted { channel: Uuid, message: Uuid },
+    MessageReactions(Uuid),
     Gateway(GatewayMessage),
     Connection(bool),
     Error(String),
@@ -135,6 +153,26 @@ fn configured_base() -> Result<String, String> {
     Ok(endpoint.to_owned())
 }
 
+async fn load_social(client: &Client, base: &str, token: &str, events: &Sender<UiEvent>) -> Result<(), String> {
+    let threads = get::<Vec<DirectThread>>(client, base, "/v1/dms", token).await?;
+    let friends = get::<Vec<Friend>>(client, base, "/v1/friends", token).await?;
+    let _ = events.send(UiEvent::DirectThreads(threads));
+    let _ = events.send(UiEvent::Friends(friends));
+    Ok(())
+}
+
+async fn request_empty(client: &Client, method: Method, url: String, token: &str, body: Option<&impl Serialize>) -> Result<(), String> {
+    let mut builder = client.request(method, url).bearer_auth(token);
+    if let Some(body) = body { builder = builder.json(body); }
+    let response = builder.send().await.map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        return Err(response.json::<ApiError>().await.map(|value| value.error)
+            .unwrap_or_else(|_| format!("Server returned {status}")));
+    }
+    Ok(())
+}
+
 async fn run(mut commands: async_mpsc::UnboundedReceiver<Command>, events: Sender<UiEvent>) {
     let base = match configured_base() {
         Ok(base) => base,
@@ -158,6 +196,9 @@ async fn run(mut commands: async_mpsc::UnboundedReceiver<Command>, events: Sende
                 if let Err(error) = load_servers(&client, &base, &saved, &events).await {
                     let _ = events.send(UiEvent::Error(error));
                 }
+                if let Err(error) = load_social(&client, &base, &saved, &events).await {
+                    let _ = events.send(UiEvent::Error(error));
+                }
             }
             Err(error) => {
                 token = None;
@@ -174,7 +215,10 @@ async fn run(mut commands: async_mpsc::UnboundedReceiver<Command>, events: Sende
                         token = Some(auth.token.clone());
                         let _ = session_sender.send(token.clone());
                         let _ = events.send(UiEvent::Authenticated(auth));
-                        load_servers(&client, &base, token.as_ref().unwrap(), &events).await
+                        match load_servers(&client, &base, token.as_ref().unwrap(), &events).await {
+                            Ok(()) => load_social(&client, &base, token.as_ref().unwrap(), &events).await,
+                            Err(error) => Err(error),
+                        }
                     }
                     Err(error) => Err(error),
                 }
@@ -186,7 +230,10 @@ async fn run(mut commands: async_mpsc::UnboundedReceiver<Command>, events: Sende
                         token = Some(auth.token.clone());
                         let _ = session_sender.send(token.clone());
                         let _ = events.send(UiEvent::Authenticated(auth));
-                        load_servers(&client, &base, token.as_ref().unwrap(), &events).await
+                        match load_servers(&client, &base, token.as_ref().unwrap(), &events).await {
+                            Ok(()) => load_social(&client, &base, token.as_ref().unwrap(), &events).await,
+                            Err(error) => Err(error),
+                        }
                     }
                     Err(error) => Err(error),
                 }
@@ -231,9 +278,70 @@ async fn execute(command: Command, client: &Client, base: &str, token: &str, eve
             let messages = get(client, base, &format!("/v1/channels/{channel}/messages?before={before}"), token).await?;
             let _ = events.send(UiEvent::OlderMessages { channel, items: messages });
         }
-        Command::SendMessage { channel, content } => {
-            let message = post::<ChatMessage, _>(client, base, &format!("/v1/channels/{channel}/messages"), Some(token), &MessageRequest { content }).await?;
+        Command::SendMessage { channel, content, reply_to } => {
+            let message = post::<ChatMessage, _>(client, base, &format!("/v1/channels/{channel}/messages"), Some(token), &MessageRequest { content, reply_to }).await?;
             let _ = events.send(UiEvent::MessagePosted(message));
+        }
+        Command::SendDirect { thread, content, reply_to } => {
+            let message = post::<ChatMessage, _>(client, base, &format!("/v1/dms/{thread}/messages"), Some(token), &MessageRequest { content, reply_to }).await?;
+            let _ = events.send(UiEvent::MessagePosted(message));
+        }
+        Command::SelectDirect(thread) => {
+            let items = get::<Vec<ChatMessage>>(client, base, &format!("/v1/dms/{thread}/messages"), token).await?;
+            let _ = events.send(UiEvent::Messages { channel: thread, items });
+        }
+        Command::LoadOlderDirect { thread, before } => {
+            let items = get::<Vec<ChatMessage>>(client, base, &format!("/v1/dms/{thread}/messages?before={before}"), token).await?;
+            let _ = events.send(UiEvent::OlderMessages { channel: thread, items });
+        }
+        Command::FetchDirects => {
+            let items = get::<Vec<DirectThread>>(client, base, "/v1/dms", token).await?;
+            let _ = events.send(UiEvent::DirectThreads(items));
+        }
+        Command::FetchFriends => {
+            let items = get::<Vec<Friend>>(client, base, "/v1/friends", token).await?;
+            let _ = events.send(UiEvent::Friends(items));
+        }
+        Command::CreateDirect(username) => {
+            let item = post::<DirectThread, _>(client, base, "/v1/dms", Some(token), &DirectRequest { username }).await?;
+            let _ = events.send(UiEvent::DirectCreated(item));
+        }
+        Command::AddFriend(username) => {
+            request_empty(client, Method::POST, format!("{base}/v1/friends/requests"), token, Some(&DirectRequest { username })).await?;
+            let items = get::<Vec<Friend>>(client, base, "/v1/friends", token).await?;
+            let _ = events.send(UiEvent::Friends(items));
+        }
+        Command::AcceptFriend(peer) => {
+            request_empty(client, Method::POST, format!("{base}/v1/friends/{peer}/accept"), token, Some(&())).await?;
+            let items = get::<Vec<Friend>>(client, base, "/v1/friends", token).await?;
+            let _ = events.send(UiEvent::Friends(items));
+        }
+        Command::RemoveFriend(peer) => {
+            request_empty(client, Method::DELETE, format!("{base}/v1/friends/{peer}"), token, Option::<&()>::None).await?;
+            let items = get::<Vec<Friend>>(client, base, "/v1/friends", token).await?;
+            let _ = events.send(UiEvent::Friends(items));
+        }
+        Command::EditMessage { channel, message, content, direct } => {
+            let path = if direct {
+                format!("/v1/dms/{channel}/messages/{message}")
+            } else {
+                format!("/v1/channels/{channel}/messages/{message}")
+            };
+            let edited = request::<ChatMessage>(client, Method::PATCH, &format!("{base}{path}"), Some(token), Some(&EditMessageRequest { content })).await?;
+            let _ = events.send(UiEvent::MessageUpdated(edited));
+        }
+        Command::DeleteMessage { channel, message, direct } => {
+            let path = if direct {
+                format!("/v1/dms/{channel}/messages/{message}")
+            } else {
+                format!("/v1/channels/{channel}/messages/{message}")
+            };
+            request_empty(client, Method::DELETE, format!("{base}{path}"), token, Option::<&()>::None).await?;
+            let _ = events.send(UiEvent::MessageDeleted { channel, message });
+        }
+        Command::React { channel, message, kind } => {
+            request_empty(client, Method::POST, format!("{base}/v1/channels/{channel}/messages/{message}/reactions"), token, Some(&ReactionRequest { kind })).await?;
+            let _ = events.send(UiEvent::MessageReactions(channel));
         }
         Command::CreateServer(name) => {
             let server = post::<Server, _>(client, base, "/v1/servers", Some(token), &NameRequest { name }).await?;

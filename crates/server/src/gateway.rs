@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json;
 use tokio::time::{Duration, interval};
 use utachat_shared::GatewayMessage;
-use crate::{AppState, auth::session_user, data::membership};
+use crate::{AppState, BroadcastTarget, auth::session_user, data::membership};
 
 pub async fn upgrade(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     ws.max_message_size(32 * 1024).on_upgrade(move |socket| handle(socket, state))
@@ -38,7 +38,11 @@ async fn handle(mut socket: WebSocket, state: AppState) {
             },
             broadcast = receiver.recv() => match broadcast {
                 Ok(message) => {
-                    if membership(&state, message.server_id, user.id).await.is_ok() && transmit(&mut socket, &message.event).await.is_err() {
+                    let authorized = match &message.target {
+                        BroadcastTarget::Server(server_id) => membership(&state, *server_id, user.id).await.is_ok(),
+                        BroadcastTarget::Users(users) => users.contains(&user.id),
+                    };
+                    if authorized && transmit(&mut socket, &message.event).await.is_err() {
                         break;
                     }
                 }

@@ -66,7 +66,8 @@ jobs:
                   headers["Authorization"] = "Bearer " + token
               req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
               with urllib.request.urlopen(req, timeout=5) as response:
-                  return json.load(response)
+                  raw = response.read()
+                  return json.loads(raw) if raw else None
 
           process = start()
           try:
@@ -77,12 +78,38 @@ jobs:
               channel = channels[0]
               posted = request("POST", "/v1/channels/" + channel["id"] + "/messages", {"content": "Persisted message"}, token)
               assert posted["content"] == "Persisted message"
+              edited = request("PATCH", "/v1/channels/" + channel["id"] + "/messages/" + posted["id"], {"content": "Edited and persisted"}, token)
+              assert edited["edited_at"] and edited["content"] == "Edited and persisted"
+              reaction = request("POST", "/v1/channels/" + channel["id"] + "/messages/" + posted["id"] + "/reactions", {"kind": "like"}, token)
+              reply = request("POST", "/v1/channels/" + channel["id"] + "/messages", {"content": "Reply", "reply_to": posted["id"]}, token)
+              assert reply["reply_to"] == posted["id"]
+              auth2 = request("POST", "/v1/auth/register", {"username": "utachatci2", "password": "AnotherStrongPassword123!"})
+              token2 = auth2["token"]
+              invite = request("GET", "/v1/servers/" + server["id"] + "/invite", token=token)
+              request("POST", "/v1/invites/" + invite["code"] + "/join", token=token2)
+              request("POST", "/v1/friends/requests", {"username": "utachatci2"}, token)
+              requests2 = request("GET", "/v1/friends", token=token2)
+              assert len(requests2) == 1 and requests2[0]["incoming"]
+              request("POST", "/v1/friends/" + auth["user"]["id"] + "/accept", token=token2)
+              accepted = request("GET", "/v1/friends", token=token)
+              assert accepted[0]["status"] == "accepted"
+              dm = request("POST", "/v1/dms", {"username": "utachatci2"}, token)
+              dm_message = request("POST", "/v1/dms/" + dm["id"] + "/messages", {"content": "Secret DM"}, token)
+              dm_list = request("GET", "/v1/dms/" + dm["id"] + "/messages", token=token2)
+              assert len(dm_list) == 1 and dm_list[0]["id"] == dm_message["id"]
+              dm_edit = request("PATCH", "/v1/dms/" + dm["id"] + "/messages/" + dm_message["id"], {"content": "Edited DM"}, token)
+              assert dm_edit["edited_at"]
+              dm_reply = request("POST", "/v1/dms/" + dm["id"] + "/messages", {"content": "DM reply", "reply_to": dm_message["id"]}, token=token2)
+              assert dm_reply["reply_to"] == dm_message["id"]
+              request("DELETE", "/v1/dms/" + dm["id"] + "/messages/" + dm_reply["id"], token=token2)
+              assert len(request("GET", "/v1/dms/" + dm["id"] + "/messages", token=token)) == 1
               process.terminate()
               process.wait(timeout=10)
               process = start()
               assert request("GET", "/v1/me", token=token)["username"] == "utachatci"
               messages = request("GET", "/v1/channels/" + channel["id"] + "/messages", token=token)
-              assert any(message["id"] == posted["id"] for message in messages)
+              assert any(message["id"] == posted["id"] and message["content"] == "Edited and persisted" and message["reactions"][0]["count"] == 1 for message in messages)
+              assert len(request("GET", "/v1/dms/" + dm["id"] + "/messages", token=token2)) == 1
           finally:
               process.terminate()
               try:

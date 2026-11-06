@@ -42,6 +42,47 @@ pub struct ChatMessage {
     pub author: PublicUser,
     pub content: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub edited_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub reply_to: Option<Uuid>,
+    #[serde(default)]
+    pub reactions: Vec<ReactionCount>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReactionCount {
+    pub kind: String,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DirectThread {
+    pub id: Uuid,
+    pub peer: PublicUser,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Friend {
+    pub user: PublicUser,
+    pub status: String,
+    pub incoming: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DirectRequest {
+    pub username: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EditMessageRequest {
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReactionRequest {
+    pub kind: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,6 +99,8 @@ pub struct NameRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageRequest {
     pub content: String,
+    #[serde(default)]
+    pub reply_to: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,6 +119,14 @@ pub enum GatewayMessage {
     Hello { token: String },
     Ready { user_id: Uuid },
     MessageCreated { message: ChatMessage },
+    MessageUpdated { message: ChatMessage },
+    MessageDeleted { channel_id: Uuid, message_id: Uuid },
+    ReactionsChanged { channel_id: Uuid },
+    DirectThreadCreated { thread: DirectThread },
+    DirectMessageCreated { message: ChatMessage },
+    DirectMessageUpdated { message: ChatMessage },
+    DirectMessageDeleted { channel_id: Uuid, message_id: Uuid },
+    FriendsChanged,
     ChannelCreated { channel: Channel },
     MemberJoined { server_id: Uuid, member: Member },
     Error { message: String },
