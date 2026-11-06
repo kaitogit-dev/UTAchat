@@ -1,21 +1,98 @@
-name: UTAchat Windows
+name: UTAchat CI
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: windows-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
+concurrency:
+  group: utachat-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: utachat
+          POSTGRES_PASSWORD: runner-password
+          POSTGRES_DB: utachat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U utachat"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://utachat:runner-password@127.0.0.1:5432/utachat
+      PORT: 4811
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Build backend
+        run: cargo build -p utachat-server
+      - name: Verify PostgreSQL persistence
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, time, urllib.error, urllib.request
+
+          base = "http://127.0.0.1:4811"
+          executable = ["target/debug/utachat-server"]
+
+          def start():
+              process = subprocess.Popen(executable, env=os.environ)
+              for _ in range(100):
+                  try:
+                      if request("GET", "/v1/health")["service"] == "utachat":
+                          return process
+                  except Exception:
+                      time.sleep(0.1)
+              process.kill()
+              raise RuntimeError("Backend did not become healthy")
+
+          def request(method, path, body=None, token=None):
+              data = None if body is None else json.dumps(body).encode()
+              headers = {"Content-Type": "application/json"}
+              if token:
+                  headers["Authorization"] = "Bearer " + token
+              req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=5) as response:
+                  return json.load(response)
+
+          process = start()
+          try:
+              auth = request("POST", "/v1/auth/register", {"username": "utachatci", "password": "BuildCheckPassword123!"})
+              token = auth["token"]
+              server = request("POST", "/v1/servers", {"name": "CI community"}, token)
+              channels = request("GET", "/v1/servers/" + server["id"] + "/channels", token=token)
+              channel = channels[0]
+              posted = request("POST", "/v1/channels/" + channel["id"] + "/messages", {"content": "Persisted message"}, token)
+              assert posted["content"] == "Persisted message"
+              process.terminate()
+              process.wait(timeout=10)
+              process = start()
+              assert request("GET", "/v1/me", token=token)["username"] == "utachatci"
+              messages = request("GET", "/v1/channels/" + channel["id"] + "/messages", token=token)
+              assert any(message["id"] == posted["id"] for message in messages)
+          finally:
+              process.terminate()
+              try:
+                  process.wait(timeout=10)
+              except subprocess.TimeoutExpired:
+                  process.kill()
+          PY
+
+  windows:
     runs-on: windows-latest
-    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -24,69 +101,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Build Windows binaries
+      - name: Build Windows client
         shell: pwsh
-        run: cargo build --release -p utachat -p utachat-server --target x86_64-pc-windows-msvc
-      - name: Package application
+        run: cargo build --release -p utachat --target x86_64-pc-windows-msvc
+      - name: Verify Windows UI executable
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path dist/Service -Force | Out-Null
+          $path = "target/x86_64-pc-windows-msvc/release/utachat.exe"
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $path))
+          $header = [BitConverter]::ToInt32($bytes, 0x3c)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $header + 24 + 68)
+          if ($subsystem -ne 2) { throw "UTAchat.exe must be a GUI application" }
+      - name: Package online client
+        if: ${{ vars.UTACHAT_API_URL != '' }}
+        env:
+          UTACHAT_API_URL: ${{ vars.UTACHAT_API_URL }}
+        shell: pwsh
+        run: |
+          if (-not $env:UTACHAT_API_URL.StartsWith("https://")) { throw "Online API URL must be HTTPS" }
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/utachat.exe dist/UTAchat.exe
-          Copy-Item target/x86_64-pc-windows-msvc/release/utachat-server.exe dist/Service/utachat-server.exe
-          Copy-Item config.json dist/config.json
-      - name: Verify GUI executables
-        shell: pwsh
-        run: |
-          foreach ($path in @("dist/UTAchat.exe", "dist/Service/utachat-server.exe")) {
-            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $path))
-            $header = [BitConverter]::ToInt32($bytes, 0x3c)
-            $subsystem = [BitConverter]::ToUInt16($bytes, $header + 24 + 68)
-            if ($subsystem -ne 2) { throw "$path opens as a console application" }
-          }
-      - name: Verify registration and persisted messaging
-        shell: pwsh
-        run: |
-          $env:UTACHAT_DATABASE_PATH = Join-Path $env:RUNNER_TEMP "utachat-ci.sqlite3"
-          $env:UTACHAT_LISTEN_ADDR = "127.0.0.1:4811"
-          $base = "http://127.0.0.1:4811"
-          $service = Start-Process -FilePath (Resolve-Path "dist/Service/utachat-server.exe") -PassThru
-          try {
-            $ready = $false
-            for ($i = 0; $i -lt 100; $i++) {
-              try {
-                $health = Invoke-RestMethod -Uri "$base/v1/health" -TimeoutSec 1
-                if ($health.service -eq "utachat") { $ready = $true; break }
-              } catch {}
-              Start-Sleep -Milliseconds 150
-            }
-            if (-not $ready) { throw "UTAchat service never became ready" }
-            $user = Invoke-RestMethod -Method Post -Uri "$base/v1/auth/register" -ContentType "application/json" -Body (@{ username = "utachatci"; password = "BuildCheckPassword123!" } | ConvertTo-Json)
-            if (-not $user.token) { throw "Registration did not return a session" }
-            $headers = @{ Authorization = "Bearer $($user.token)" }
-            $server = Invoke-RestMethod -Method Post -Uri "$base/v1/servers" -Headers $headers -ContentType "application/json" -Body (@{ name = "Smoke test" } | ConvertTo-Json)
-            $channels = Invoke-RestMethod -Uri "$base/v1/servers/$($server.id)/channels" -Headers $headers
-            $channel = @($channels)[0]
-            if (-not $channel.id) { throw "Server was created without its general channel" }
-            $posted = Invoke-RestMethod -Method Post -Uri "$base/v1/channels/$($channel.id)/messages" -Headers $headers -ContentType "application/json" -Body (@{ content = "Persistence check" } | ConvertTo-Json)
-            if ($posted.content -ne "Persistence check") { throw "Message was not stored" }
-            Stop-Process -Id $service.Id -Force
-            $service.WaitForExit()
-            $service = Start-Process -FilePath (Resolve-Path "dist/Service/utachat-server.exe") -PassThru
-            $ready = $false
-            for ($i = 0; $i -lt 100; $i++) {
-              try {
-                $health = Invoke-RestMethod -Uri "$base/v1/health" -TimeoutSec 1
-                if ($health.service -eq "utachat") { $ready = $true; break }
-              } catch {}
-              Start-Sleep -Milliseconds 150
-            }
-            if (-not $ready) { throw "UTAchat service failed to restart" }
-            $messages = Invoke-RestMethod -Uri "$base/v1/channels/$($channel.id)/messages" -Headers $headers
-            if (-not (@($messages) | Where-Object { $_.content -eq "Persistence check" })) { throw "Messages did not survive restart" }
-          } finally {
-            if ($service -and -not $service.HasExited) { Stop-Process -Id $service.Id -Force }
-          }
+          @{ api_url = $env:UTACHAT_API_URL.TrimEnd("/") } | ConvertTo-Json | Set-Content dist/config.json
       - uses: actions/upload-artifact@v4
+        if: ${{ vars.UTACHAT_API_URL != '' }}
         with:
           name: UTAchat-Windows-x64
           path: dist/

@@ -1,19 +1,17 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
-
 mod auth;
 mod data;
 mod error;
 mod gateway;
 
-use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{env, net::SocketAddr};
 use axum::{Router, routing::{get, post}};
-use sqlx::{SqlitePool, sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions}};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::sync::broadcast;
 use utachat_shared::GatewayMessage;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: SqlitePool,
+    pub db: PgPool,
     pub events: broadcast::Sender<Broadcast>,
 }
 
@@ -25,43 +23,15 @@ pub struct Broadcast {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| env::temp_dir()))
-        .join("UTAchat");
-    std::fs::create_dir_all(&data_dir)?;
-    let database_path = env::var_os("UTACHAT_DATABASE_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data_dir.join("utachat.sqlite3"));
-    if let Some(parent) = database_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(data_dir.join("server.log"))?;
-    let (writer, _guard) = tracing_appender::non_blocking(log_file);
     tracing_subscriber::fmt()
-        .with_writer(writer)
-        .with_ansi(false)
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "utachat_server=info".into()))
         .init();
-    let outcome = serve(database_path).await;
-    if let Err(error) = &outcome {
-        tracing::error!(%error, "UTAchat service stopped");
-    }
-    outcome
-}
-
-async fn serve(database_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let options = SqliteConnectOptions::new()
-        .filename(&database_path)
-        .create_if_missing(true)
-        .foreign_keys(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    let pool = SqlitePoolOptions::new().max_connections(8).connect_with(options).await?;
+    let database_url = env::var("DATABASE_URL")?;
+    let pool = PgPoolOptions::new()
+        .max_connections(16)
+        .connect(&database_url)
+        .await?;
     sqlx::migrate!("../../migrations").run(&pool).await?;
     let (events, _) = broadcast::channel(2048);
     let state = AppState { db: pool, events };
@@ -79,11 +49,12 @@ async fn serve(database_path: PathBuf) -> Result<(), Box<dyn std::error::Error>>
         .route("/v1/channels/{channel}/messages", get(data::list_messages).post(data::send_message))
         .route("/v1/gateway", get(gateway::upgrade))
         .with_state(state);
-    let addr: SocketAddr = env::var("UTACHAT_LISTEN_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:4800".into())
-        .parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "UTAchat service ready");
+    let address: SocketAddr = match env::var("UTACHAT_LISTEN_ADDR") {
+        Ok(address) => address.parse()?,
+        Err(_) => format!("0.0.0.0:{}", env::var("PORT").unwrap_or_else(|_| "8080".to_owned())).parse()?,
+    };
+    let listener = tokio::net::TcpListener::bind(address).await?;
+    tracing::info!(%address, "UTAchat backend ready");
     axum::serve(listener, router).await?;
     Ok(())
 }

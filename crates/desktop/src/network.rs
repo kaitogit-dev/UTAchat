@@ -1,5 +1,4 @@
-use std::{env, process::{Command as ProcessCommand, Stdio}, sync::mpsc::{self, Receiver, Sender}, thread, time::Duration};
-use crate::service::ManagedService;
+use std::{env, sync::mpsc::{self, Receiver, Sender}, thread, time::Duration};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Method};
 use serde::{de::DeserializeOwned, Serialize};
@@ -111,82 +110,43 @@ struct Configuration {
     api_url: String,
 }
 
-fn configured_base() -> String {
-    if let Ok(base) = env::var("UTACHAT_API_URL") {
-        return base.trim_end_matches('/').to_owned();
+fn configured_base() -> Result<String, String> {
+    let configured = env::var("UTACHAT_API_URL").ok().or_else(|| {
+        env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|folder| folder.join("config.json")))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|json| serde_json::from_str::<Configuration>(&json).ok())
+            .map(|config| config.api_url)
+    }).unwrap_or_default();
+    let endpoint = configured.trim().trim_end_matches('/');
+    if endpoint.is_empty() {
+        return Err("UTAchat online service has not been configured.".to_owned());
     }
-    let configured = env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|folder| folder.join("config.json")))
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|json| serde_json::from_str::<Configuration>(&json).ok())
-        .map(|config| config.api_url);
-    configured.unwrap_or_else(|| "http://127.0.0.1:4800".to_owned())
-        .trim_end_matches('/').to_owned()
-}
-
-async fn service_healthy(client: &Client, base: &str) -> bool {
-    match client.get(format!("{base}/v1/health"))
-        .timeout(Duration::from_millis(900))
-        .send().await
-    {
-        Ok(response) if response.status().is_success() => {
-            response.json::<serde_json::Value>().await
-                .map(|body| body.get("service").and_then(|s| s.as_str()) == Some("utachat"))
-                .unwrap_or(false)
-        }
-        _ => false,
+    let address = reqwest::Url::parse(endpoint)
+        .map_err(|_| "Invalid UTAchat server address.".to_owned())?;
+    let local = address.host_str().is_some_and(|host| host == "127.0.0.1" || host == "localhost");
+    if address.scheme() != "https" && !(cfg!(debug_assertions) && address.scheme() == "http" && local) {
+        return Err("UTAchat requires a secure online server address.".to_owned());
     }
-}
-
-async fn ensure_local_service(client: &Client, base: &str) -> Result<Option<ManagedService>, String> {
-    if service_healthy(client, base).await {
-        return Ok(None);
+    if address.host_str().is_none() || !address.username().is_empty() || address.password().is_some() || address.query().is_some() || address.fragment().is_some() || address.path() != "/" {
+        return Err("Invalid UTAchat server address.".to_owned());
     }
-    let path = env::current_exe()
-        .map_err(|e| format!("Cannot locate UTAchat installation: {e}"))?
-        .parent()
-        .ok_or("Cannot locate UTAchat installation folder")?
-        .join("Service")
-        .join("utachat-server.exe");
-    if !path.is_file() {
-        return Err("UTAchat service is missing. Extract the complete application folder.".into());
-    }
-    let mut process = ProcessCommand::new(&path);
-    process.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        process.creation_flags(0x08000000);
-    }
-    let mut service = ManagedService::spawn(process)
-        .map_err(|e| format!("Cannot start UTAchat service: {e}"))?;
-    for _ in 0..80 {
-        if service_healthy(client, base).await {
-            return Ok(Some(service));
-        }
-        if service.exited().map_err(|e| format!("Cannot monitor UTAchat service: {e}"))? {
-            return Err("UTAchat service exited. Check %LOCALAPPDATA%\\UTAchat\\server.log".into());
-        }
-        tokio::time::sleep(Duration::from_millis(125)).await;
-    }
-    Err("UTAchat service did not become ready. Check %LOCALAPPDATA%\\UTAchat\\server.log".into())
+    Ok(endpoint.to_owned())
 }
 
 async fn run(mut commands: async_mpsc::UnboundedReceiver<Command>, events: Sender<UiEvent>) {
-    let base = configured_base();
-    let client = Client::builder().timeout(Duration::from_secs(15)).build().expect("HTTP client");
-    let _local_service = if base == "http://127.0.0.1:4800" {
-        match ensure_local_service(&client, &base).await {
-            Ok(service) => service,
-            Err(error) => {
-                let _ = events.send(UiEvent::Error(error));
-                return;
+    let base = match configured_base() {
+        Ok(base) => base,
+        Err(error) => {
+            let _ = events.send(UiEvent::Error(error.clone()));
+            while commands.recv().await.is_some() {
+                let _ = events.send(UiEvent::Error(error.clone()));
             }
+            return;
         }
-    } else {
-        None
     };
+    let client = Client::builder().timeout(Duration::from_secs(15)).build().expect("HTTP client");
     let (session_sender, session_receiver) = watch::channel::<Option<String>>(None);
     tokio::spawn(gateway_loop(base.clone(), session_receiver, events.clone()));
     let mut token = credential().and_then(|entry| entry.get_password().ok());

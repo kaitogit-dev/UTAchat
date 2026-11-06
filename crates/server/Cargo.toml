@@ -7,7 +7,7 @@ edition.workspace = true
 utachat-shared = { path = "../shared" }
 axum = { version = "0.8", features = ["ws", "json", "macros"] }
 tokio = { version = "1.48", features = ["full"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "sqlite", "uuid", "chrono", "migrate"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -20,4 +20,3 @@ futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-tracing-appender = "0.2"

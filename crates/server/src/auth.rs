@@ -13,10 +13,9 @@ pub fn token_hash(token: &str) -> String {
 
 pub async fn session_user(state: &AppState, token: &str) -> ApiResult<PublicUser> {
     let row = sqlx::query(
-        "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?"
+        "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > NOW()"
     )
     .bind(token_hash(token))
-    .bind(Utc::now())
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(AppError::unauthorized)?;
@@ -33,7 +32,7 @@ pub async fn current_user(state: &AppState, headers: &HeaderMap) -> ApiResult<Pu
 
 async fn new_session(state: &AppState, user: PublicUser) -> ApiResult<AuthResponse> {
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    sqlx::query("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)")
+    sqlx::query("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)")
         .bind(Uuid::new_v4())
         .bind(user.id)
         .bind(token_hash(&token))
@@ -56,7 +55,7 @@ pub async fn register(State(state): State<AppState>, Json(input): Json<Credentia
         .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed"))?
         .to_string();
     let id = Uuid::new_v4();
-    let result = sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+    let result = sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)")
         .bind(id).bind(&username).bind(hash).execute(&state.db).await;
     match result {
         Ok(_) => {}
@@ -68,7 +67,7 @@ pub async fn register(State(state): State<AppState>, Json(input): Json<Credentia
 }
 
 pub async fn login(State(state): State<AppState>, Json(input): Json<CredentialRequest>) -> ApiResult<Json<AuthResponse>> {
-    let row = sqlx::query("SELECT id, username, password_hash FROM users WHERE LOWER(username) = LOWER(?)")
+    let row = sqlx::query("SELECT id, username, password_hash FROM users WHERE LOWER(username) = LOWER($1)")
         .bind(input.username.trim()).fetch_optional(&state.db).await?;
     let row = row.ok_or_else(AppError::unauthorized)?;
     let hash: String = row.get("password_hash");
@@ -85,7 +84,7 @@ pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<StatusCode> {
     let token = headers.get("authorization").and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer ")).ok_or_else(AppError::unauthorized)?;
-    sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+    sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
         .bind(token_hash(token)).execute(&state.db).await?;
     Ok(StatusCode::NO_CONTENT)
 }

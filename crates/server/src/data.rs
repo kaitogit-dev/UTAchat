@@ -12,26 +12,26 @@ pub struct MessagesQuery {
 }
 
 pub async fn membership(state: &AppState, server: Uuid, user: Uuid) -> ApiResult<String> {
-    sqlx::query_scalar::<_, String>("SELECT role FROM memberships WHERE server_id = ? AND user_id = ?")
+    sqlx::query_scalar::<_, String>("SELECT role FROM memberships WHERE server_id = $1 AND user_id = $2")
         .bind(server).bind(user).fetch_optional(&state.db).await?
         .ok_or_else(AppError::forbidden)
 }
 
 async fn channel_server(state: &AppState, channel: Uuid) -> ApiResult<Uuid> {
-    sqlx::query_scalar::<_, Uuid>("SELECT server_id FROM channels WHERE id = ?")
+    sqlx::query_scalar::<_, Uuid>("SELECT server_id FROM channels WHERE id = $1")
         .bind(channel).fetch_optional(&state.db).await?
         .ok_or_else(AppError::not_found)
 }
 
-fn server_from(row: sqlx::sqlite::SqliteRow) -> Server {
+fn server_from(row: sqlx::postgres::PgRow) -> Server {
     Server { id: row.get("id"), name: row.get("name"), owner_id: row.get("owner_id") }
 }
 
-fn channel_from(row: sqlx::sqlite::SqliteRow) -> Channel {
+fn channel_from(row: sqlx::postgres::PgRow) -> Channel {
     Channel { id: row.get("id"), server_id: row.get("server_id"), name: row.get("name"), position: row.get("position") }
 }
 
-fn message_from(row: sqlx::sqlite::SqliteRow) -> ChatMessage {
+fn message_from(row: sqlx::postgres::PgRow) -> ChatMessage {
     ChatMessage {
         id: row.get("id"), channel_id: row.get("channel_id"),
         author: PublicUser { id: row.get("author_id"), username: row.get("username") },
@@ -41,7 +41,7 @@ fn message_from(row: sqlx::sqlite::SqliteRow) -> ChatMessage {
 
 pub async fn list_servers(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<Server>>> {
     let user = current_user(&state, &headers).await?;
-    let rows = sqlx::query("SELECT s.id, s.name, s.owner_id FROM servers s JOIN memberships m ON m.server_id = s.id WHERE m.user_id = ? ORDER BY m.joined_at")
+    let rows = sqlx::query("SELECT s.id, s.name, s.owner_id FROM servers s JOIN memberships m ON m.server_id = s.id WHERE m.user_id = $1 ORDER BY m.joined_at")
         .bind(user.id).fetch_all(&state.db).await?;
     Ok(Json(rows.into_iter().map(server_from).collect()))
 }
@@ -54,12 +54,12 @@ pub async fn create_server(State(state): State<AppState>, headers: HeaderMap, Js
     }
     let id = Uuid::new_v4();
     let mut tx = state.db.begin().await?;
-    sqlx::query("INSERT INTO servers (id, name, owner_id, invite_code) VALUES (?, ?, ?, ?)")
+    sqlx::query("INSERT INTO servers (id, name, owner_id, invite_code) VALUES ($1, $2, $3, $4)")
         .bind(id).bind(name).bind(user.id).bind(Uuid::new_v4().simple().to_string())
         .execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO memberships (server_id, user_id, role) VALUES (?, ?, 'owner')")
+    sqlx::query("INSERT INTO memberships (server_id, user_id, role) VALUES ($1, $2, 'owner')")
         .bind(id).bind(user.id).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO channels (id, server_id, name, position) VALUES (?, ?, 'general', 0)")
+    sqlx::query("INSERT INTO channels (id, server_id, name, position) VALUES ($1, $2, 'general', 0)")
         .bind(Uuid::new_v4()).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(Server { id, name: name.to_string(), owner_id: user.id })))
@@ -68,7 +68,7 @@ pub async fn create_server(State(state): State<AppState>, headers: HeaderMap, Js
 pub async fn list_channels(State(state): State<AppState>, headers: HeaderMap, Path(server): Path<Uuid>) -> ApiResult<Json<Vec<Channel>>> {
     let user = current_user(&state, &headers).await?;
     membership(&state, server, user.id).await?;
-    let rows = sqlx::query("SELECT id, server_id, name, position FROM channels WHERE server_id = ? ORDER BY position, created_at")
+    let rows = sqlx::query("SELECT id, server_id, name, position FROM channels WHERE server_id = $1 ORDER BY position, created_at")
         .bind(server).fetch_all(&state.db).await?;
     Ok(Json(rows.into_iter().map(channel_from).collect()))
 }
@@ -83,14 +83,14 @@ pub async fn create_channel(State(state): State<AppState>, headers: HeaderMap, P
         return Err(AppError::bad_request("Channel name must use 1-48 letters, digits, hyphens or underscores"));
     }
     let id = Uuid::new_v4();
-    let result = sqlx::query("INSERT INTO channels (id, server_id, name, position) VALUES (?, ?, ?, COALESCE((SELECT MAX(position) + 1 FROM channels WHERE server_id = ?), 0))")
+    let result = sqlx::query("INSERT INTO channels (id, server_id, name, position) VALUES ($1, $2, $3, COALESCE((SELECT MAX(position) + 1 FROM channels WHERE server_id = $4), 0))")
         .bind(id).bind(server).bind(&name).bind(server).execute(&state.db).await;
     match result {
         Ok(_) => {}
         Err(sqlx::Error::Database(error)) if error.is_unique_violation() => return Err(AppError::conflict("Channel already exists")),
         Err(error) => return Err(error.into()),
     }
-    let channel = sqlx::query("SELECT id, server_id, name, position FROM channels WHERE id = ?")
+    let channel = sqlx::query("SELECT id, server_id, name, position FROM channels WHERE id = $1")
         .bind(id).fetch_one(&state.db).await.map(channel_from)?;
     let _ = state.events.send(Broadcast { server_id: server, event: GatewayMessage::ChannelCreated { channel: channel.clone() } });
     Ok((StatusCode::CREATED, Json(channel)))
@@ -99,7 +99,7 @@ pub async fn create_channel(State(state): State<AppState>, headers: HeaderMap, P
 pub async fn list_members(State(state): State<AppState>, headers: HeaderMap, Path(server): Path<Uuid>) -> ApiResult<Json<Vec<Member>>> {
     let user = current_user(&state, &headers).await?;
     membership(&state, server, user.id).await?;
-    let rows = sqlx::query("SELECT u.id, u.username, m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.server_id = ? ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, LOWER(u.username)")
+    let rows = sqlx::query("SELECT u.id, u.username, m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.server_id = $1 ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, LOWER(u.username)")
         .bind(server).fetch_all(&state.db).await?;
     Ok(Json(rows.into_iter().map(|r| Member { user: PublicUser { id: r.get("id"), username: r.get("username") }, role: r.get("role") }).collect()))
 }
@@ -107,17 +107,17 @@ pub async fn list_members(State(state): State<AppState>, headers: HeaderMap, Pat
 pub async fn get_invite(State(state): State<AppState>, headers: HeaderMap, Path(server): Path<Uuid>) -> ApiResult<Json<InviteResponse>> {
     let user = current_user(&state, &headers).await?;
     membership(&state, server, user.id).await?;
-    let code = sqlx::query_scalar::<_, String>("SELECT invite_code FROM servers WHERE id = ?")
+    let code = sqlx::query_scalar::<_, String>("SELECT invite_code FROM servers WHERE id = $1")
         .bind(server).fetch_optional(&state.db).await?.ok_or_else(AppError::not_found)?;
     Ok(Json(InviteResponse { code }))
 }
 
 pub async fn join_invite(State(state): State<AppState>, headers: HeaderMap, Path(code): Path<String>) -> ApiResult<Json<Server>> {
     let user = current_user(&state, &headers).await?;
-    let row = sqlx::query("SELECT id, name, owner_id FROM servers WHERE invite_code = ?")
+    let row = sqlx::query("SELECT id, name, owner_id FROM servers WHERE invite_code = $1")
         .bind(code.trim()).fetch_optional(&state.db).await?.ok_or_else(AppError::not_found)?;
     let server = server_from(row);
-    sqlx::query("INSERT INTO memberships (server_id, user_id, role) VALUES (?, ?, 'member') ON CONFLICT DO NOTHING")
+    sqlx::query("INSERT INTO memberships (server_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING")
         .bind(server.id).bind(user.id).execute(&state.db).await?;
     let member = Member { user, role: "member".to_string() };
     let _ = state.events.send(Broadcast { server_id: server.id, event: GatewayMessage::MemberJoined { server_id: server.id, member } });
@@ -131,12 +131,12 @@ pub async fn list_messages(State(state): State<AppState>, headers: HeaderMap, Pa
     let limit = query.limit.unwrap_or(100).clamp(1, 100);
     let rows = if let Some(before) = query.before {
         sqlx::query(
-            "SELECT m.id, m.channel_id, m.author_id, u.username, m.content, m.created_at FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? AND (m.created_at, m.id) < (SELECT created_at, id FROM messages WHERE id = ? AND channel_id = ?) ORDER BY m.created_at DESC, m.id DESC LIMIT ?"
+            "SELECT m.id, m.channel_id, m.author_id, u.username, m.content, m.created_at FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = $1 AND (m.created_at, m.id) < (SELECT created_at, id FROM messages WHERE id = $2 AND channel_id = $3) ORDER BY m.created_at DESC, m.id DESC LIMIT $4"
         )
             .bind(channel).bind(before).bind(channel).bind(limit).fetch_all(&state.db).await?
     } else {
         sqlx::query(
-            "SELECT m.id, m.channel_id, m.author_id, u.username, m.content, m.created_at FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?"
+            "SELECT m.id, m.channel_id, m.author_id, u.username, m.content, m.created_at FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = $1 ORDER BY m.created_at DESC, m.id DESC LIMIT $2"
         )
             .bind(channel).bind(limit).fetch_all(&state.db).await?
     };
@@ -154,7 +154,7 @@ pub async fn send_message(State(state): State<AppState>, headers: HeaderMap, Pat
         return Err(AppError::bad_request("Message must contain 1-4000 characters"));
     }
     let id = Uuid::new_v4();
-    let row = sqlx::query("INSERT INTO messages (id, channel_id, author_id, content) VALUES (?, ?, ?, ?) RETURNING created_at")
+    let row = sqlx::query("INSERT INTO messages (id, channel_id, author_id, content) VALUES ($1, $2, $3, $4) RETURNING created_at")
         .bind(id).bind(channel).bind(user.id).bind(text).fetch_one(&state.db).await?;
     let message = ChatMessage { id, channel_id: channel, author: user, content: text.to_string(), created_at: row.get("created_at") };
     let _ = state.events.send(Broadcast { server_id: server, event: GatewayMessage::MessageCreated { message: message.clone() } });
