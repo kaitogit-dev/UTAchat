@@ -1,0 +1,35 @@
+name: UTAchat Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Build Windows binaries
+        shell: pwsh
+        run: cargo build --release -p utachat -p utachat-server --target x86_64-pc-windows-msvc
+      - name: Package executables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/utachat.exe dist/UTAchat.exe
+          Copy-Item target/x86_64-pc-windows-msvc/release/utachat-server.exe dist/utachat-server.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UTAchat-Windows-x64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
