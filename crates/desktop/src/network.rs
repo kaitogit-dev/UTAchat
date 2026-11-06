@@ -1,4 +1,5 @@
 use std::{env, process::{Command as ProcessCommand, Stdio}, sync::mpsc::{self, Receiver, Sender}, thread, time::Duration};
+use crate::service::ManagedService;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Method};
 use serde::{de::DeserializeOwned, Serialize};
@@ -138,9 +139,9 @@ async fn service_healthy(client: &Client, base: &str) -> bool {
     }
 }
 
-async fn ensure_local_service(client: &Client, base: &str) -> Result<(), String> {
+async fn ensure_local_service(client: &Client, base: &str) -> Result<Option<ManagedService>, String> {
     if service_healthy(client, base).await {
-        return Ok(());
+        return Ok(None);
     }
     let path = env::current_exe()
         .map_err(|e| format!("Cannot locate UTAchat installation: {e}"))?
@@ -158,14 +159,14 @@ async fn ensure_local_service(client: &Client, base: &str) -> Result<(), String>
         use std::os::windows::process::CommandExt;
         process.creation_flags(0x08000000);
     }
-    let mut child = process.spawn()
+    let mut service = ManagedService::spawn(process)
         .map_err(|e| format!("Cannot start UTAchat service: {e}"))?;
     for _ in 0..80 {
         if service_healthy(client, base).await {
-            return Ok(());
+            return Ok(Some(service));
         }
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("UTAchat service exited ({status}). Check %LOCALAPPDATA%\\UTAchat\\server.log"));
+        if service.exited().map_err(|e| format!("Cannot monitor UTAchat service: {e}"))? {
+            return Err("UTAchat service exited. Check %LOCALAPPDATA%\\UTAchat\\server.log".into());
         }
         tokio::time::sleep(Duration::from_millis(125)).await;
     }
@@ -175,12 +176,17 @@ async fn ensure_local_service(client: &Client, base: &str) -> Result<(), String>
 async fn run(mut commands: async_mpsc::UnboundedReceiver<Command>, events: Sender<UiEvent>) {
     let base = configured_base();
     let client = Client::builder().timeout(Duration::from_secs(15)).build().expect("HTTP client");
-    if base == "http://127.0.0.1:4800" {
-        if let Err(error) = ensure_local_service(&client, &base).await {
-            let _ = events.send(UiEvent::Error(error));
-            return;
+    let _local_service = if base == "http://127.0.0.1:4800" {
+        match ensure_local_service(&client, &base).await {
+            Ok(service) => service,
+            Err(error) => {
+                let _ = events.send(UiEvent::Error(error));
+                return;
+            }
         }
-    }
+    } else {
+        None
+    };
     let (session_sender, session_receiver) = watch::channel::<Option<String>>(None);
     tokio::spawn(gateway_loop(base.clone(), session_receiver, events.clone()));
     let mut token = credential().and_then(|entry| entry.get_password().ok());

@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod network;
+mod service;
 mod ui;
 
 use gpui_kit::*;
