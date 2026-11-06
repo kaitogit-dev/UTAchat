@@ -5,13 +5,17 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -23,15 +27,68 @@ jobs:
       - name: Build Windows binaries
         shell: pwsh
         run: cargo build --release -p utachat -p utachat-server --target x86_64-pc-windows-msvc
-      - name: Package executables
+      - name: Package application
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          New-Item -ItemType Directory -Path dist/Service -Force | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/utachat.exe dist/UTAchat.exe
-          Copy-Item target/x86_64-pc-windows-msvc/release/utachat-server.exe dist/utachat-server.exe
+          Copy-Item target/x86_64-pc-windows-msvc/release/utachat-server.exe dist/Service/utachat-server.exe
+          Copy-Item config.json dist/config.json
+      - name: Verify GUI executables
+        shell: pwsh
+        run: |
+          foreach ($path in @("dist/UTAchat.exe", "dist/Service/utachat-server.exe")) {
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $path))
+            $header = [BitConverter]::ToInt32($bytes, 0x3c)
+            $subsystem = [BitConverter]::ToUInt16($bytes, $header + 24 + 68)
+            if ($subsystem -ne 2) { throw "$path opens as a console application" }
+          }
+      - name: Verify registration and persisted messaging
+        shell: pwsh
+        run: |
+          $env:UTACHAT_DATABASE_PATH = Join-Path $env:RUNNER_TEMP "utachat-ci.sqlite3"
+          $env:UTACHAT_LISTEN_ADDR = "127.0.0.1:4811"
+          $base = "http://127.0.0.1:4811"
+          $service = Start-Process -FilePath (Resolve-Path "dist/Service/utachat-server.exe") -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 100; $i++) {
+              try {
+                $health = Invoke-RestMethod -Uri "$base/v1/health" -TimeoutSec 1
+                if ($health.service -eq "utachat") { $ready = $true; break }
+              } catch {}
+              Start-Sleep -Milliseconds 150
+            }
+            if (-not $ready) { throw "UTAchat service never became ready" }
+            $user = Invoke-RestMethod -Method Post -Uri "$base/v1/auth/register" -ContentType "application/json" -Body (@{ username = "utachatci"; password = "BuildCheckPassword123!" } | ConvertTo-Json)
+            if (-not $user.token) { throw "Registration did not return a session" }
+            $headers = @{ Authorization = "Bearer $($user.token)" }
+            $server = Invoke-RestMethod -Method Post -Uri "$base/v1/servers" -Headers $headers -ContentType "application/json" -Body (@{ name = "Smoke test" } | ConvertTo-Json)
+            $channels = Invoke-RestMethod -Uri "$base/v1/servers/$($server.id)/channels" -Headers $headers
+            $channel = @($channels)[0]
+            if (-not $channel.id) { throw "Server was created without its general channel" }
+            $posted = Invoke-RestMethod -Method Post -Uri "$base/v1/channels/$($channel.id)/messages" -Headers $headers -ContentType "application/json" -Body (@{ content = "Persistence check" } | ConvertTo-Json)
+            if ($posted.content -ne "Persistence check") { throw "Message was not stored" }
+            Stop-Process -Id $service.Id -Force
+            $service.WaitForExit()
+            $service = Start-Process -FilePath (Resolve-Path "dist/Service/utachat-server.exe") -PassThru
+            $ready = $false
+            for ($i = 0; $i -lt 100; $i++) {
+              try {
+                $health = Invoke-RestMethod -Uri "$base/v1/health" -TimeoutSec 1
+                if ($health.service -eq "utachat") { $ready = $true; break }
+              } catch {}
+              Start-Sleep -Milliseconds 150
+            }
+            if (-not $ready) { throw "UTAchat service failed to restart" }
+            $messages = Invoke-RestMethod -Uri "$base/v1/channels/$($channel.id)/messages" -Headers $headers
+            if (-not (@($messages) | Where-Object { $_.content -eq "Persistence check" })) { throw "Messages did not survive restart" }
+          } finally {
+            if ($service -and -not $service.HasExited) { Stop-Process -Id $service.Id -Force }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: UTAchat-Windows-x64
-          path: dist/*
+          path: dist/
           if-no-files-found: error
           retention-days: 30

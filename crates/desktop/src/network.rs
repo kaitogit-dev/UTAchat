@@ -1,4 +1,4 @@
-use std::{env, sync::mpsc::{self, Receiver, Sender}, thread, time::Duration};
+use std::{env, process::{Command as ProcessCommand, Stdio}, sync::mpsc::{self, Receiver, Sender}, thread, time::Duration};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Method};
 use serde::{de::DeserializeOwned, Serialize};
@@ -104,10 +104,83 @@ async fn load_servers(client: &Client, base: &str, token: &str, events: &Sender<
     Ok(())
 }
 
+
+#[derive(serde::Deserialize)]
+struct Configuration {
+    api_url: String,
+}
+
+fn configured_base() -> String {
+    if let Ok(base) = env::var("UTACHAT_API_URL") {
+        return base.trim_end_matches('/').to_owned();
+    }
+    let configured = env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|folder| folder.join("config.json")))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|json| serde_json::from_str::<Configuration>(&json).ok())
+        .map(|config| config.api_url);
+    configured.unwrap_or_else(|| "http://127.0.0.1:4800".to_owned())
+        .trim_end_matches('/').to_owned()
+}
+
+async fn service_healthy(client: &Client, base: &str) -> bool {
+    match client.get(format!("{base}/v1/health"))
+        .timeout(Duration::from_millis(900))
+        .send().await
+    {
+        Ok(response) if response.status().is_success() => {
+            response.json::<serde_json::Value>().await
+                .map(|body| body.get("service").and_then(|s| s.as_str()) == Some("utachat"))
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+async fn ensure_local_service(client: &Client, base: &str) -> Result<(), String> {
+    if service_healthy(client, base).await {
+        return Ok(());
+    }
+    let path = env::current_exe()
+        .map_err(|e| format!("Cannot locate UTAchat installation: {e}"))?
+        .parent()
+        .ok_or("Cannot locate UTAchat installation folder")?
+        .join("Service")
+        .join("utachat-server.exe");
+    if !path.is_file() {
+        return Err("UTAchat service is missing. Extract the complete application folder.".into());
+    }
+    let mut process = ProcessCommand::new(&path);
+    process.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(0x08000000);
+    }
+    let mut child = process.spawn()
+        .map_err(|e| format!("Cannot start UTAchat service: {e}"))?;
+    for _ in 0..80 {
+        if service_healthy(client, base).await {
+            return Ok(());
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("UTAchat service exited ({status}). Check %LOCALAPPDATA%\\UTAchat\\server.log"));
+        }
+        tokio::time::sleep(Duration::from_millis(125)).await;
+    }
+    Err("UTAchat service did not become ready. Check %LOCALAPPDATA%\\UTAchat\\server.log".into())
+}
+
 async fn run(mut commands: async_mpsc::UnboundedReceiver<Command>, events: Sender<UiEvent>) {
-    let base = env::var("UTACHAT_API_URL").unwrap_or_else(|_| "http://127.0.0.1:4800".to_string());
-    let base = base.trim_end_matches('/').to_string();
+    let base = configured_base();
     let client = Client::builder().timeout(Duration::from_secs(15)).build().expect("HTTP client");
+    if base == "http://127.0.0.1:4800" {
+        if let Err(error) = ensure_local_service(&client, &base).await {
+            let _ = events.send(UiEvent::Error(error));
+            return;
+        }
+    }
     let (session_sender, session_receiver) = watch::channel::<Option<String>>(None);
     tokio::spawn(gateway_loop(base.clone(), session_receiver, events.clone()));
     let mut token = credential().and_then(|entry| entry.get_password().ok());
