@@ -81,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/invites/{code}/join", post(data::join_invite))
         .route("/v1/channels/{channel}/messages", get(data::list_messages).post(data::send_message))
         .route("/v1/channels/{channel}/read", post(profile::mark_channel_read))
+        .route("/v1/channels/{channel}/info", get(data::channel_info))
         .route("/v1/channels/{channel}/pins", get(search::pinned))
         .route("/v1/channels/{channel}/messages/{message}/pin", axum::routing::put(search::pin).delete(search::unpin))
         .route("/v1/channels/{channel}/messages/{message}", axum::routing::patch(message_actions::edit).delete(message_actions::delete))

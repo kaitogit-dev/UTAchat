@@ -209,6 +209,11 @@ jobs:
             "dist/assets/icons/users.svg",
             "dist/assets/icons/ellipsis.svg",
             "dist/assets/icons/user-plus.svg",
+            "dist/assets/icons/search.svg",
+            "dist/assets/icons/pin.svg",
+            "dist/assets/icons/inbox.svg",
+            "dist/assets/icons/settings.svg",
+            "dist/assets/icons/checkmark.svg",
             "dist/assets/icons/check.svg"
           )
           foreach ($file in $required) {

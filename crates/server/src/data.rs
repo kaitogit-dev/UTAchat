@@ -129,6 +129,15 @@ pub async fn join_invite(State(state): State<AppState>, headers: HeaderMap, Path
     Ok(Json(server))
 }
 
+pub async fn channel_info(State(state): State<AppState>, headers: HeaderMap, Path(channel): Path<Uuid>) -> ApiResult<Json<Channel>> {
+    let user = current_user(&state, &headers).await?;
+    let server = channel_server(&state, channel).await?;
+    membership(&state, server, user.id).await?;
+    let row = sqlx::query("SELECT id,server_id,name,position FROM channels WHERE id=$1")
+        .bind(channel).fetch_one(&state.db).await?;
+    Ok(Json(channel_from(row)))
+}
+
 pub async fn list_messages(State(state): State<AppState>, headers: HeaderMap, Path(channel): Path<Uuid>, Query(query): Query<MessagesQuery>) -> ApiResult<Json<Vec<ChatMessage>>> {
     let user = current_user(&state, &headers).await?;
     let server = channel_server(&state, channel).await?;

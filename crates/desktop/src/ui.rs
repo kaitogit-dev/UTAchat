@@ -1,10 +1,10 @@
-use std::{sync::mpsc::TryRecvError, time::Duration};
+use std::{collections::HashMap, sync::mpsc::TryRecvError, time::Duration};
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use uuid::Uuid;
-use utachat_shared::{AuthResponse, Channel, ChatMessage, DirectThread, Friend, GatewayMessage, Member, PublicUser, Server};
+use utachat_shared::{AuthResponse, Channel, ChatMessage, DirectThread, Friend, GatewayMessage, Member, PublicUser, Server, UserProfile, SearchHit, ChannelUnread, Notification};
 use crate::network::{self, Command, Network, UiEvent};
 use crate::resources::theme_color;
 
@@ -20,6 +20,15 @@ enum Modal {
     AddFriend,
     EditMessage,
     DeleteMessage,
+    Search,
+    Pinned,
+    Inbox,
+    Profile,
+    MemberActions,
+    RenameServer,
+    RenameChannel,
+    KickMember,
+    BanMember,
 }
 
 pub struct UTAchat {
@@ -30,6 +39,13 @@ pub struct UTAchat {
     members: Vec<Member>,
     directs: Vec<DirectThread>,
     friends: Vec<Friend>,
+    profile: Option<UserProfile>,
+    search_results: Vec<SearchHit>,
+    pinned_messages: Vec<ChatMessage>,
+    notifications: Vec<Notification>,
+    unreads: HashMap<Uuid, i64>,
+    profile_status: String,
+    selected_member: Option<Member>,
     direct_mode: bool,
     show_members: bool,
     action_message: Option<Uuid>,
@@ -40,6 +56,7 @@ pub struct UTAchat {
     chat_scroll: ScrollHandle,
     selected_server: Option<Uuid>,
     selected_channel: Option<Uuid>,
+    pending_channel: Option<Uuid>,
     connected: bool,
     register: bool,
     busy: bool,
@@ -57,6 +74,10 @@ pub struct UTAchat {
     invite_input: Entity<InputState>,
     person_input: Entity<InputState>,
     edit_input: Entity<InputState>,
+    search_input: Entity<InputState>,
+    bio_input: Entity<InputState>,
+    rename_input: Entity<InputState>,
+    ban_reason: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -70,6 +91,10 @@ impl UTAchat {
         let invite_input = cx.new(|cx| InputState::new(window, cx).placeholder("Invite code"));
         let person_input = cx.new(|cx| InputState::new(window, cx).placeholder("Username"));
         let edit_input = cx.new(|cx| InputState::new(window, cx).placeholder("Edit message"));
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
+        let bio_input = cx.new(|cx| InputState::new(window, cx).placeholder("About me"));
+        let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("New name"));
+        let ban_reason = cx.new(|cx| InputState::new(window, cx).placeholder("Reason"));
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
@@ -86,15 +111,18 @@ impl UTAchat {
             net: network::start(), user: None,
             servers: Vec::new(), channels: Vec::new(), members: Vec::new(), messages: Vec::new(),
             directs: Vec::new(), friends: Vec::new(), direct_mode: true,
+            profile: None, search_results: Vec::new(), pinned_messages: Vec::new(),
+            notifications: Vec::new(), unreads: HashMap::new(),
+            profile_status: "online".to_owned(), selected_member: None,
             show_members: true, action_message: None,
             reply_to: None, editing_message: None, pending_delete: None,
             chat_scroll: ScrollHandle::new(),
-            selected_server: None, selected_channel: None,
+            selected_server: None, selected_channel: None, pending_channel: None,
             connected: false, register: false, busy: false, sending: false,
             pending_message: None, has_older: false, modal: Modal::None,
             invite_code: String::new(), error: None,
             username, password, composer, server_name, channel_name, invite_input,
-            person_input, edit_input,
+            person_input, edit_input, search_input, bio_input, rename_input, ban_reason,
             _subscriptions: subscriptions,
         };
         cx.spawn_in(window, async move |weak, window_cx| {
@@ -166,6 +194,40 @@ impl UTAchat {
         self.messages.clear();
         self.has_older = false;
         self.issue(Command::SelectServer(server));
+        cx.notify();
+    }
+
+    fn open_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let bio = self.profile.as_ref().map(|profile| profile.bio.clone()).unwrap_or_default();
+        self.profile_status = self.profile.as_ref().map(|profile| profile.status.clone())
+            .unwrap_or_else(|| "online".to_owned());
+        self.bio_input.update(cx, |input, cx| input.set_value(bio, window, cx));
+        self.modal = Modal::Profile;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn open_search(&mut self, cx: &mut Context<Self>) {
+        if self.selected_server.is_none() || self.direct_mode { return; }
+        self.search_results.clear();
+        self.modal = Modal::Search;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn open_pins(&mut self, cx: &mut Context<Self>) {
+        if self.direct_mode { return; }
+        if let Some(channel) = self.selected_channel {
+            self.pinned_messages.clear();
+            self.modal = Modal::Pinned;
+            self.issue(Command::FetchPins(channel));
+            cx.notify();
+        }
+    }
+
+    fn open_inbox(&mut self, cx: &mut Context<Self>) {
+        self.modal = Modal::Inbox;
+        self.issue(Command::FetchNotifications);
         cx.notify();
     }
 
@@ -244,6 +306,7 @@ impl UTAchat {
             changed = true;
             match event {
                 UiEvent::Authenticated(AuthResponse { user, .. }) => {
+                    self.issue(Command::FetchNotifications);
                     self.user = Some(user);
                     self.busy = false;
                     self.error = None;
@@ -256,12 +319,17 @@ impl UTAchat {
                     self.channels.clear();
                     self.directs.clear();
                     self.friends.clear();
+                    self.profile = None;
+                    self.unreads.clear();
+                    self.notifications.clear();
+                    self.search_results.clear();
                     self.direct_mode = true;
                     self.reply_to = None;
                     self.members.clear();
                     self.messages.clear();
                     self.selected_server = None;
                     self.selected_channel = None;
+                    self.pending_channel = None;
                     self.connected = false;
                     self.busy = false;
                     self.modal = Modal::None;
@@ -280,7 +348,9 @@ impl UTAchat {
                 UiEvent::Channels { server, items } if Some(server) == self.selected_server => {
                     self.channels = items;
                     if self.selected_channel.is_none_or(|id| !self.channels.iter().any(|c| c.id == id)) {
-                        if let Some(channel) = self.channels.first().map(|c| c.id) {
+                        let target = self.pending_channel.take().filter(|id| self.channels.iter().any(|c| c.id == *id))
+                            .or_else(|| self.channels.first().map(|c| c.id));
+                        if let Some(channel) = target {
                             self.select_channel(channel, cx);
                         } else {
                             self.selected_channel = None;
@@ -334,6 +404,60 @@ impl UTAchat {
                     self.busy = false;
                     self.modal = Modal::Invite;
                 }
+                UiEvent::Profile(profile) => {
+                    self.profile = Some(profile);
+                }
+                UiEvent::ProfileSaved(profile) => {
+                    self.profile_status = profile.status.clone();
+                    self.profile = Some(profile);
+                    self.busy = false;
+                    self.modal = Modal::None;
+                }
+                UiEvent::SearchResults(hits) => {
+                    self.search_results = hits;
+                    self.busy = false;
+                }
+                UiEvent::PinnedMessages(items) => {
+                    self.pinned_messages = items;
+                    self.busy = false;
+                }
+                UiEvent::Notifications(items) => {
+                    self.notifications = items;
+                    self.busy = false;
+                }
+                UiEvent::Unreads(items) => {
+                    self.unreads = items.into_iter().map(|item| (item.channel_id, item.count)).collect();
+                }
+                UiEvent::RoleChanged | UiEvent::MemberKicked(_) | UiEvent::MemberBanned(_) => {
+                    self.busy = false;
+                    self.modal = Modal::None;
+                    if let Some(server) = self.selected_server {
+                        self.issue(Command::SelectServer(server));
+                    }
+                }
+                UiEvent::ServerRenamed(server) => {
+                    if let Some(item) = self.servers.iter_mut().find(|item| item.id == server.id) { *item = server; }
+                    self.busy = false;
+                    self.modal = Modal::None;
+                }
+                UiEvent::ChannelRenamed(channel) => {
+                    if let Some(item) = self.channels.iter_mut().find(|item| item.id == channel.id) { *item = channel; }
+                    self.busy = false;
+                    self.modal = Modal::None;
+                }
+                UiEvent::LocatedChannel(channel) => {
+                    self.pending_channel = Some(channel.id);
+                    if self.selected_server != Some(channel.server_id) || self.direct_mode {
+                        self.select_server(channel.server_id, cx);
+                    } else {
+                        self.pending_channel = None;
+                        if self.selected_channel == Some(channel.id) {
+                            self.issue(Command::SelectChannel(channel.id));
+                        } else {
+                            self.select_channel(channel.id, cx);
+                        }
+                    }
+                }
                 UiEvent::DirectThreads(items) => {
                     self.directs = items;
                 }
@@ -380,8 +504,15 @@ impl UTAchat {
                         }
                     }
                 }
-                UiEvent::Gateway(GatewayMessage::MessageCreated { message })
-                | UiEvent::Gateway(GatewayMessage::DirectMessageCreated { message }) => self.push_message(message),
+                UiEvent::Gateway(GatewayMessage::MessageCreated { message }) => {
+                    if !self.direct_mode && self.selected_channel == Some(message.channel_id) {
+                        self.issue(Command::MarkRead(message.channel_id));
+                    } else {
+                        self.issue(Command::FetchUnreads);
+                    }
+                    self.push_message(message);
+                }
+                UiEvent::Gateway(GatewayMessage::DirectMessageCreated { message }) => self.push_message(message),
                 UiEvent::Gateway(GatewayMessage::MessageUpdated { message })
                 | UiEvent::Gateway(GatewayMessage::DirectMessageUpdated { message }) => self.update_message(message),
                 UiEvent::Gateway(GatewayMessage::MessageDeleted { channel_id, message_id })
@@ -405,9 +536,61 @@ impl UTAchat {
                     }
                 }
                 UiEvent::Gateway(GatewayMessage::FriendsChanged) => self.issue(Command::FetchFriends),
+                UiEvent::Gateway(GatewayMessage::NotificationCreated { notification }) => {
+                    if !self.notifications.iter().any(|item| item.id == notification.id) {
+                        self.notifications.insert(0, notification);
+                    }
+                    self.issue(Command::FetchUnreads);
+                }
+                UiEvent::Gateway(GatewayMessage::ProfileUpdated { profile }) => {
+                    self.profile = Some(profile);
+                }
+                UiEvent::Gateway(GatewayMessage::PinsChanged { channel_id }) => {
+                    if self.modal == Modal::Pinned && self.selected_channel == Some(channel_id) {
+                        self.issue(Command::FetchPins(channel_id));
+                    }
+                    if self.selected_channel == Some(channel_id) {
+                        self.issue(Command::SelectChannel(channel_id));
+                    }
+                }
+                UiEvent::Gateway(GatewayMessage::ChannelDeleted { server_id, channel_id }) => {
+                    if self.selected_server == Some(server_id) {
+                        self.channels.retain(|channel| channel.id != channel_id);
+                        if self.selected_channel == Some(channel_id) {
+                            self.selected_channel = None;
+                            if let Some(next) = self.channels.first().map(|channel| channel.id) {
+                                self.select_channel(next, cx);
+                            }
+                        }
+                    }
+                }
+                UiEvent::Gateway(GatewayMessage::MemberRemoved { server_id, user_id }) => {
+                    if self.selected_server == Some(server_id) {
+                        if self.user.as_ref().is_some_and(|user| user.id == user_id) {
+                            self.selected_server = None;
+                            self.selected_channel = None;
+                            self.channels.clear();
+                            self.members.clear();
+                            self.messages.clear();
+                            self.direct_mode = true;
+                            self.issue(Command::FetchServers);
+                        } else {
+                            self.issue(Command::SelectServer(server_id));
+                        }
+                    }
+                }
+                UiEvent::Gateway(GatewayMessage::MemberRoleChanged { server_id, .. }) => {
+                    if self.selected_server == Some(server_id) {
+                        self.issue(Command::SelectServer(server_id));
+                    }
+                },
                 UiEvent::Gateway(GatewayMessage::ChannelCreated { channel }) => {
-                    if Some(channel.server_id) == self.selected_server && !self.channels.iter().any(|c| c.id == channel.id) {
-                        self.channels.push(channel);
+                    if Some(channel.server_id) == self.selected_server {
+                        if let Some(existing) = self.channels.iter_mut().find(|c| c.id == channel.id) {
+                            *existing = channel;
+                        } else {
+                            self.channels.push(channel);
+                        }
                         self.channels.sort_by_key(|c| c.position);
                     }
                 }
@@ -513,6 +696,11 @@ impl UTAchat {
                     .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(username))
                     .child(div().text_size(px(12.)).text_color(rgb(theme_color("muted")))
                         .child(if self.connected { "Online" } else { "Connecting" }))))
+            .child(div().id("settings-trigger").size(px(32.)).rounded_md()
+                .cursor_pointer().flex().items_center().justify_center()
+                .child(svg().path("icons/settings.svg").size(px(18.))
+                    .text_color(rgb(theme_color("muted"))))
+                .on_click(cx.listener(|this, _, window, cx| this.open_profile(window, cx))))
             .child(div().id("logout-trigger").px_2().py_2().rounded_md()
                 .cursor_pointer().text_xs().text_color(rgb(theme_color("muted")))
                 .child("Log out")
@@ -594,8 +782,9 @@ impl UTAchat {
     fn render_channel_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let server_name = self.selected_server.and_then(|id| self.servers.iter().find(|s| s.id == id))
             .map(|s| s.name.clone()).unwrap_or_else(|| "No server selected".into());
-        let can_create = self.selected_server.and_then(|id| self.servers.iter().find(|s| s.id == id))
-            .zip(self.user.as_ref()).is_some_and(|(s, u)| s.owner_id == u.id);
+        let can_create = self.user.as_ref().is_some_and(|user|
+            self.members.iter().any(|member| member.user.id == user.id &&
+                matches!(member.role.as_str(), "owner" | "moderator")));
         let mut channel_list = div().id("channel-scroll").flex_1().min_h_0().overflow_y_scrollbar().p_3().flex().flex_col().gap_1()
             .child(div().h(px(30.)).px_2().flex().items_center().justify_between()
                 .child(div().text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted"))).child("TEXT CHANNELS"))
@@ -605,12 +794,17 @@ impl UTAchat {
         for channel in &self.channels {
             let id = channel.id;
             let active = Some(id) == self.selected_channel;
+            let unread = self.unreads.get(&id).copied().unwrap_or(0);
             channel_list = channel_list.child(div().id(format!("channel-{id}")).h(px(34.)).px_3().rounded_md()
                 .flex().items_center().gap_2().cursor_pointer()
                 .bg(rgb(if active { theme_color("selection") } else { theme_color("sidebar") }))
                 .text_color(rgb(if active { theme_color("text") } else { theme_color("muted") }))
                 .child(div().text_lg().child("#"))
-                .child(div().text_size(px(14.)).font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).child(channel.name.clone()))
+                .child(div().text_size(px(14.)).font_weight(if active || unread > 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).child(channel.name.clone()))
+                .when(unread > 0, |el| el.child(div().ml_auto().px_2().py_1().rounded_lg()
+                    .bg(rgb(theme_color("danger_text"))).text_xs()
+                    .text_color(rgb(theme_color("rail"))).font_weight(FontWeight::BOLD)
+                    .child(if unread > 99 { "99+".to_owned() } else { unread.to_string() })))
                 .on_click(cx.listener(move |this, _, _, cx| this.select_channel(id, cx))));
         }
         div().w(px(240.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
@@ -627,7 +821,20 @@ impl UTAchat {
                             this.issue(Command::FetchInvite(server));
                         }
                         cx.notify();
-                    }))))
+                    })))
+                .when(can_create, |el| el.child(div().id("rename-server-trigger")
+                    .size(px(26.)).rounded_md().cursor_pointer()
+                    .flex().items_center().justify_center()
+                    .child(svg().path("icons/settings.svg").size(px(16.))
+                        .text_color(rgb(theme_color("muted"))))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let name = this.selected_server.and_then(|id|
+                            this.servers.iter().find(|server| server.id == id))
+                            .map(|server| server.name.clone()).unwrap_or_default();
+                        this.rename_input.update(cx, |input, cx| input.set_value(name, window, cx));
+                        this.modal = Modal::RenameServer;
+                        cx.notify();
+                    })))))
             .child(channel_list)
             .child(self.render_user_panel(cx))
             .into_any_element()
@@ -664,6 +871,9 @@ impl UTAchat {
         } else {
             current_channel.map(|c| c.name.as_str()).unwrap_or("Select a channel")
         };
+        let can_pin = !self.direct_mode && self.user.as_ref().is_some_and(|user|
+            self.members.iter().any(|member| member.user.id == user.id &&
+                matches!(member.role.as_str(), "owner" | "moderator")));
         let mut stream = div().id("message-scroll").flex_1().min_h_0()
             .track_scroll(&self.chat_scroll).overflow_y_scrollbar()
             .px_5().py_4().flex().flex_col().gap_1()
@@ -700,7 +910,7 @@ impl UTAchat {
                 && (message.created_at - self.messages[i - 1].created_at).num_minutes() < 5;
             let expanded = self.action_message == Some(message.id);
             stream = stream.child(render_message(message, continuation,
-                self.user.as_ref().map(|u| u.id), self.direct_mode, expanded, cx));
+                self.user.as_ref().map(|u| u.id), self.direct_mode, expanded, can_pin, cx));
         }
         let mut center = div().flex_1().min_w_0().h_full().flex().flex_col().bg(rgb(theme_color("content")))
             .child(div().h(px(52.)).bg(rgb(theme_color("header"))).border_b_1().border_color(rgb(theme_color("header_separator"))).px_5()
@@ -709,7 +919,24 @@ impl UTAchat {
                     .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted")))
                         .child(if self.direct_mode { "@" } else { "#" }))
                     .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(channel_name.to_string())))
-                .child(div().flex().items_center().gap_3()
+                .child(div().flex().items_center().gap_2()
+                    .when(!self.direct_mode, |el| el.child(div().id("search-trigger")
+                        .size(px(36.)).rounded_md().cursor_pointer()
+                        .flex().items_center().justify_center()
+                        .child(svg().path("icons/search.svg").size(px(20.))
+                            .text_color(rgb(theme_color("muted"))))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_search(cx)))))
+                    .when(!self.direct_mode, |el| el.child(div().id("pins-trigger")
+                        .size(px(36.)).rounded_md().cursor_pointer()
+                        .flex().items_center().justify_center()
+                        .child(svg().path("icons/pin.svg").size(px(20.))
+                            .text_color(rgb(theme_color("muted"))))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_pins(cx)))))
+                    .child(div().id("inbox-trigger").size(px(36.)).rounded_md().cursor_pointer()
+                        .flex().items_center().justify_center()
+                        .child(svg().path("icons/inbox.svg").size(px(20.))
+                            .text_color(rgb(theme_color("muted"))))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_inbox(cx))))
                     .when(!self.direct_mode, |el| el.child(div().id("members-toggle").size(px(36.))
                         .cursor_pointer().rounded_md().flex().items_center().justify_center()
                         .bg(rgb(if self.show_members { theme_color("selection") } else { theme_color("header") }))
@@ -744,11 +971,11 @@ impl UTAchat {
         center.into_any_element()
     }
 
-    fn render_members(&self) -> AnyElement {
+    fn render_members(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut body = div().id("member-scroll").w(px(240.)).h_full().min_h_0()
             .overflow_y_scrollbar().bg(rgb(theme_color("member_bg")))
             .p_3().flex().flex_col().gap_1();
-        for (role, title) in [("owner", "SERVER OWNER"), ("member", "MEMBERS")] {
+        for (role, title) in [("owner", "SERVER OWNER"), ("moderator", "MODERATORS"), ("member", "MEMBERS")] {
             let group: Vec<_> = self.members.iter().filter(|member| member.role == role).collect();
             if group.is_empty() { continue; }
             body = body.child(div().h(px(34.)).px_2().pt_2()
@@ -759,13 +986,24 @@ impl UTAchat {
                 let username = member.user.username.clone();
                 let avatar = initials(&username);
                 let color = avatar_color(member.user.id);
-                body = body.child(div().h(px(43.)).px_2().rounded_md()
-                    .flex().items_center().gap_3()
+                let target = member.clone();
+                let can_manage = self.user.as_ref().is_some_and(|user|
+                    self.members.iter().any(|item| item.user.id == user.id &&
+                        matches!(item.role.as_str(), "owner" | "moderator"))) &&
+                    self.user.as_ref().is_some_and(|user| user.id != member.user.id);
+                body = body.child(div().id(format!("member-{}", member.user.id))
+                    .h(px(43.)).px_2().rounded_md().flex().items_center().gap_3()
+                    .when(can_manage, |el| el.cursor_pointer())
                     .child(div().size(px(31.)).rounded_full().bg(rgb(color))
                         .flex().items_center().justify_center().text_sm()
                         .font_weight(FontWeight::BOLD).child(avatar))
                     .child(div().text_sm().text_color(rgb(theme_color("text")))
-                        .child(username)));
+                        .child(username))
+                    .when(can_manage, |el| el.on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected_member = Some(target.clone());
+                        this.modal = Modal::MemberActions;
+                        cx.notify();
+                    }))));
             }
         }
         body.into_any_element()
@@ -783,7 +1021,266 @@ impl UTAchat {
             .into_any_element()
     }
 
+    fn render_search_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut results = div().id("search-results").h(px(390.)).min_h_0()
+            .overflow_y_scrollbar().flex().flex_col().gap_2();
+        for hit in &self.search_results {
+            let channel = hit.message.channel_id;
+            results = results.child(div().id(format!("search-result-{}",hit.message.id))
+                .p_3().rounded_md().bg(rgb(theme_color("input_bg")))
+                .cursor_pointer().flex().flex_col().gap_2()
+                .child(div().flex().items_center().justify_between()
+                    .child(div().text_sm().font_weight(FontWeight::BOLD)
+                        .child(format!("#{}  /  {}",hit.channel_name,hit.message.author.username)))
+                    .child(div().text_xs().text_color(rgb(theme_color("muted")))
+                        .child(hit.message.created_at.format("%b %-d, %Y").to_string())))
+                .child(div().text_sm().text_color(rgb(theme_color("message_text")))
+                    .child(hit.message.content.clone()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.modal = Modal::None;
+                    if this.selected_channel != Some(channel) {
+                        this.selected_channel = None;
+                        this.select_channel(channel, cx);
+                    } else {
+                        this.issue(Command::SelectChannel(channel));
+                    }
+                })));
+        }
+        if self.search_results.is_empty() {
+            results = results.child(div().p_4().text_sm().text_color(rgb(theme_color("muted")))
+                .child("Search messages across this server"));
+        }
+        let card = div().w(px(650.)).bg(rgb(theme_color("sidebar"))).rounded_lg()
+            .p_5().flex().flex_col().gap_4()
+            .child(div().flex().items_center().justify_between()
+                .child(div().text_xl().font_weight(FontWeight::BOLD).child("Search"))
+                .child(div().id("close-search").cursor_pointer().text_sm().child("Close")
+                    .on_click(cx.listener(|this, _, _, cx| {this.modal=Modal::None;cx.notify();}))))
+            .child(div().h(px(46.)).flex().gap_2()
+                .child(div().flex_1().child(input_frame(&self.search_input)))
+                .child(div().id("search-submit").w(px(95.)).rounded_md()
+                    .bg(rgb(theme_color("accent"))).cursor_pointer()
+                    .flex().items_center().justify_center().text_sm().child("Search")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(server)=this.selected_server {
+                            let query=this.search_input.read(cx).value().to_string();
+                            this.busy=true;
+                            this.issue(Command::Search {server,query});
+                            cx.notify();
+                        }
+                    }))))
+            .child(results)
+            .when_some(self.error.as_ref(),|el,error|el.child(div().text_sm()
+                .text_color(rgb(theme_color("danger_text"))).child(error.clone())));
+        div().absolute().inset_0().bg(rgba(theme_color("overlay")))
+            .flex().items_center().justify_center().child(card).into_any_element()
+    }
+
+    fn render_pins_panel(&self,cx:&mut Context<Self>)->AnyElement {
+        let mut rows=div().id("pins-scroll").h(px(360.)).min_h_0().overflow_y_scrollbar()
+            .flex().flex_col().gap_2();
+        for message in &self.pinned_messages {
+            let channel=message.channel_id;
+            rows=rows.child(div().id(format!("pinned-{}",message.id))
+                .p_3().bg(rgb(theme_color("input_bg"))).rounded_md()
+                .flex().flex_col().gap_2()
+                .child(div().flex().items_center().justify_between()
+                    .child(div().text_sm().font_weight(FontWeight::BOLD)
+                        .child(message.author.username.clone()))
+                    .child(div().text_xs().text_color(rgb(theme_color("muted")))
+                        .child(message.created_at.format("%b %-d").to_string())))
+                .child(div().text_sm().child(message.content.clone()))
+                .child(div().id(format!("open-pin-{}",message.id)).cursor_pointer()
+                    .text_xs().text_color(rgb(theme_color("link"))).child("Open channel")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.modal=Modal::None;
+                        if this.selected_channel!=Some(channel){
+                            this.selected_channel=None;
+                            this.select_channel(channel,cx);
+                        }
+                    }))));
+        }
+        if self.pinned_messages.is_empty(){
+            rows=rows.child(div().p_4().text_sm().text_color(rgb(theme_color("muted")))
+                .child("No pinned messages"));
+        }
+        let card=div().w(px(520.)).bg(rgb(theme_color("sidebar"))).rounded_lg()
+            .p_5().flex().flex_col().gap_4()
+            .child(div().flex().items_center().justify_between()
+                .child(div().text_xl().font_weight(FontWeight::BOLD).child("Pinned Messages"))
+                .child(div().id("close-pins").cursor_pointer().text_sm().child("Close")
+                    .on_click(cx.listener(|this, _, _, cx|{this.modal=Modal::None;cx.notify();}))))
+            .child(rows);
+        div().absolute().inset_0().bg(rgba(theme_color("overlay")))
+            .flex().items_center().justify_center().child(card).into_any_element()
+    }
+
+    fn render_inbox_panel(&self,cx:&mut Context<Self>)->AnyElement {
+        let unread=self.notifications.iter().filter(|item|item.read_at.is_none()).count();
+        let mut entries=div().id("notification-scroll").h(px(400.)).min_h_0()
+            .overflow_y_scrollbar().flex().flex_col().gap_2();
+        for item in &self.notifications {
+            let message=match item.kind.as_str(){
+                "mention"=>format!("{} mentioned you",item.actor.username),
+                "direct_message"=>format!("New message from {}",item.actor.username),
+                "friend_request"=>format!("Friend request from {}",item.actor.username),
+                _=>item.kind.clone(),
+            };
+            let thread=item.thread_id;
+            let channel=item.channel_id;
+            entries=entries.child(div().id(format!("notice-{}",item.id))
+                .p_3().rounded_md().bg(rgb(if item.read_at.is_none(){
+                    theme_color("selection")
+                }else{theme_color("input_bg")}))
+                .flex().items_center().justify_between()
+                .child(div().flex().flex_col().gap_1()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(message))
+                    .child(div().text_xs().text_color(rgb(theme_color("muted")))
+                        .child(item.created_at.format("%b %-d, %H:%M").to_string())))
+                .child(div().id(format!("notice-open-{}",item.id)).cursor_pointer()
+                    .text_xs().text_color(rgb(theme_color("link"))).child("Open")
+                    .on_click(cx.listener(move |this, _, _, cx|{
+                        this.modal=Modal::None;
+                        if let Some(thread)=thread{
+                            this.select_direct(thread,cx);
+                        }else if let Some(channel)=channel{
+                            this.issue(Command::LocateChannel(channel));
+                        }else{
+                            this.enter_direct(cx);
+                        }
+                    }))));
+        }
+        if self.notifications.is_empty(){
+            entries=entries.child(div().p_5().text_sm().text_color(rgb(theme_color("muted")))
+                .child("No notifications yet"));
+        }
+        let card=div().w(px(540.)).bg(rgb(theme_color("sidebar"))).rounded_lg()
+            .p_5().flex().flex_col().gap_4()
+            .child(div().flex().items_center().justify_between()
+                .child(div().text_xl().font_weight(FontWeight::BOLD)
+                    .child(format!("Inbox ({unread})")))
+                .child(div().id("close-inbox").cursor_pointer().text_sm().child("Close")
+                    .on_click(cx.listener(|this,_,_,cx|{this.modal=Modal::None;cx.notify();}))))
+            .child(entries)
+            .child(div().id("mark-notifications").h(px(37.)).rounded_md()
+                .bg(rgb(theme_color("server_action_bg"))).cursor_pointer()
+                .flex().items_center().justify_center().text_sm()
+                .child("Mark all as read")
+                .on_click(cx.listener(|this,_,_,cx|{
+                    this.issue(Command::MarkNotificationsRead);
+                    cx.notify();
+                })));
+        div().absolute().inset_0().bg(rgba(theme_color("overlay")))
+            .flex().items_center().justify_center().child(card).into_any_element()
+    }
+
+    fn render_profile_panel(&self,cx:&mut Context<Self>)->AnyElement{
+        let mut statuses=div().flex().flex_wrap().gap_2();
+        for (key,label) in [("online","Online"),("idle","Idle"),("dnd","Do Not Disturb"),("invisible","Invisible")]{
+            let active=self.profile_status==key;
+            let status=key.to_owned();
+            statuses=statuses.child(div().id(format!("status-{key}"))
+                .px_3().py_2().rounded_md().cursor_pointer()
+                .bg(rgb(if active{theme_color("accent")}else{theme_color("input_bg")}))
+                .text_sm().child(label)
+                .on_click(cx.listener(move |this,_,_,cx|{
+                    this.profile_status=status.clone();
+                    cx.notify();
+                })));
+        }
+        let name=self.user.as_ref().map(|user|user.username.clone()).unwrap_or_default();
+        let card=div().w(px(510.)).bg(rgb(theme_color("sidebar"))).rounded_lg()
+            .p_6().flex().flex_col().gap_4()
+            .child(div().flex().items_center().justify_between()
+                .child(div().text_xl().font_weight(FontWeight::BOLD).child("Profile"))
+                .child(div().id("close-profile").cursor_pointer().text_sm().child("Close")
+                    .on_click(cx.listener(|this,_,_,cx|{this.modal=Modal::None;cx.notify();}))))
+            .child(div().text_sm().font_weight(FontWeight::BOLD).child(name))
+            .child(div().text_xs().text_color(rgb(theme_color("muted"))).child("ABOUT ME"))
+            .child(input_frame(&self.bio_input))
+            .child(div().text_xs().text_color(rgb(theme_color("muted"))).child("AVAILABILITY"))
+            .child(statuses)
+            .child(div().id("save-profile").h(px(40.)).rounded_md()
+                .bg(rgb(theme_color("accent"))).cursor_pointer()
+                .flex().items_center().justify_center().text_sm()
+                .child(if self.busy{"Saving"}else{"Save changes"})
+                .on_click(cx.listener(|this,_,_,cx|{
+                    if this.busy{return;}
+                    let bio=this.bio_input.read(cx).value().to_string();
+                    let status=this.profile_status.clone();
+                    this.busy=true;
+                    this.issue(Command::UpdateProfile {bio,status});
+                    cx.notify();
+                })));
+        div().absolute().inset_0().bg(rgba(theme_color("overlay")))
+            .flex().items_center().justify_center().child(card).into_any_element()
+    }
+
+    fn render_member_actions(&self,cx:&mut Context<Self>)->AnyElement{
+        let Some(member)=self.selected_member.as_ref() else {
+            return div().into_any_element();
+        };
+        let target=member.user.id;
+        let server=self.selected_server;
+        let role=self.members.iter().find(|item|self.user.as_ref().is_some_and(|user|item.user.id==user.id))
+            .map(|item|item.role.as_str()).unwrap_or("member");
+        let can_change=role=="owner" && member.role!="owner";
+        let can_remove=(role=="owner"&&member.role!="owner")||
+            (role=="moderator"&&member.role=="member");
+        let mut actions=div().flex().flex_col().gap_2();
+        if can_change{
+            let next=if member.role=="moderator"{"member"}else{"moderator"}.to_owned();
+            let label=if member.role=="moderator"{"Remove moderator role"}else{"Make moderator"};
+            actions=actions.child(div().id("member-role-action").h(px(40.)).px_3()
+                .rounded_md().bg(rgb(theme_color("input_bg"))).cursor_pointer()
+                .flex().items_center().text_sm().child(label)
+                .on_click(cx.listener(move |this,_,_,cx|{
+                    if let Some(server)=server{
+                        this.busy=true;
+                        this.issue(Command::SetMemberRole{server,user:target,role:next.clone()});
+                        cx.notify();
+                    }
+                })));
+        }
+        if can_remove{
+            actions=actions.child(div().id("member-kick-action").h(px(40.)).px_3()
+                .rounded_md().bg(rgb(theme_color("input_bg"))).cursor_pointer()
+                .flex().items_center().text_sm().child("Kick from server")
+                .on_click(cx.listener(|this,_,_,cx|{
+                    this.modal=Modal::KickMember;
+                    cx.notify();
+                })));
+            actions=actions.child(div().id("member-ban-action").h(px(40.)).px_3()
+                .rounded_md().bg(rgb(theme_color("input_bg"))).cursor_pointer()
+                .flex().items_center().text_sm().text_color(rgb(theme_color("danger_text")))
+                .child("Ban from server")
+                .on_click(cx.listener(|this,_,_,cx|{
+                    this.modal=Modal::BanMember;
+                    cx.notify();
+                })));
+        }
+        let card=div().w(px(420.)).bg(rgb(theme_color("sidebar"))).rounded_lg()
+            .p_5().flex().flex_col().gap_4()
+            .child(div().flex().items_center().justify_between()
+                .child(div().text_xl().font_weight(FontWeight::BOLD).child(member.user.username.clone()))
+                .child(div().id("close-member-actions").cursor_pointer().text_sm().child("Close")
+                    .on_click(cx.listener(|this,_,_,cx|{this.modal=Modal::None;cx.notify();}))))
+            .child(div().text_sm().text_color(rgb(theme_color("muted")))
+                .child(format!("Role: {}",member.role)))
+            .child(actions);
+        div().absolute().inset_0().bg(rgba(theme_color("overlay")))
+            .flex().items_center().justify_center().child(card).into_any_element()
+    }
+
     fn render_modal(&self, cx: &mut Context<Self>) -> AnyElement {
+        match self.modal {
+            Modal::Search => return self.render_search_panel(cx),
+            Modal::Pinned => return self.render_pins_panel(cx),
+            Modal::Inbox => return self.render_inbox_panel(cx),
+            Modal::Profile => return self.render_profile_panel(cx),
+            Modal::MemberActions => return self.render_member_actions(cx),
+            _ => {}
+        }
         let (title, input, action) = match self.modal {
             Modal::CreateServer => ("Create server", Some(&self.server_name), "CREATE"),
             Modal::CreateChannel => ("Create channel", Some(&self.channel_name), "CREATE"),
@@ -793,7 +1290,11 @@ impl UTAchat {
             Modal::AddFriend => ("Add friend", Some(&self.person_input), "SEND REQUEST"),
             Modal::EditMessage => ("Edit message", Some(&self.edit_input), "SAVE"),
             Modal::DeleteMessage => ("Delete message", None, "DELETE"),
-            Modal::None => ("", None, ""),
+            Modal::KickMember => ("Kick member", None, "KICK"),
+            Modal::BanMember => ("Ban member", Some(&self.ban_reason), "BAN"),
+            Modal::RenameServer => ("Rename server", Some(&self.rename_input), "SAVE"),
+            Modal::RenameChannel => ("Rename channel", Some(&self.rename_input), "SAVE"),
+            Modal::Search | Modal::Pinned | Modal::Inbox | Modal::Profile | Modal::MemberActions | Modal::None => ("", None, ""),
         };
         let mut card = div().w(px(440.)).bg(rgb(theme_color("sidebar"))).rounded_lg().p_6().flex().flex_col().gap_5()
             .child(div().flex().items_center().justify_between()
@@ -806,14 +1307,19 @@ impl UTAchat {
             card = card.child(div().p_4().rounded_md().bg(rgb(theme_color("input_bg")))
                 .text_sm().child(self.invite_code.clone()));
         } else {
+            let warning = match self.modal {
+                Modal::KickMember => "This member will be removed from the server.",
+                Modal::DeleteMessage => "This will permanently remove the message.",
+                _ => "",
+            };
             card = card.child(div().text_sm().text_color(rgb(theme_color("muted")))
-                .child("This will permanently remove the message."));
+                .child(warning));
         }
         if let Some(error) = &self.error {
             card = card.child(div().text_sm().text_color(rgb(theme_color("danger_text"))).child(error.clone()));
         }
         card = card.child(div().id("modal-submit").h(px(43.)).rounded_md()
-            .bg(rgb(if self.modal == Modal::DeleteMessage {
+            .bg(rgb(if matches!(self.modal, Modal::DeleteMessage | Modal::KickMember | Modal::BanMember) {
                 theme_color("delete_action")
             } else {
                 theme_color("accent")
@@ -869,7 +1375,36 @@ impl UTAchat {
                             this.issue(Command::DeleteMessage { channel, message, direct });
                         }
                     }
-                    Modal::None => {}
+                    Modal::RenameServer => {
+                        if let Some(server) = this.selected_server {
+                            let name = this.rename_input.read(cx).value().to_string();
+                            this.busy = true;
+                            this.issue(Command::RenameServer {server,name});
+                        }
+                    }
+                    Modal::RenameChannel => {
+                        if let (Some(server),Some(channel))=(this.selected_server,this.selected_channel) {
+                            let name=this.rename_input.read(cx).value().to_string();
+                            this.busy=true;
+                            this.issue(Command::RenameChannel {server,channel,name});
+                        }
+                    }
+                    Modal::KickMember => {
+                        if let (Some(server),Some(member))=(this.selected_server,this.selected_member.as_ref()) {
+                            let user=member.user.id;
+                            this.busy=true;
+                            this.issue(Command::KickMember {server,user});
+                        }
+                    }
+                    Modal::BanMember => {
+                        if let (Some(server),Some(member))=(this.selected_server,this.selected_member.as_ref()) {
+                            let user=member.user.id;
+                            let reason=this.ban_reason.read(cx).value().to_string();
+                            this.busy=true;
+                            this.issue(Command::BanMember {server,user,reason});
+                        }
+                    }
+                    Modal::Search | Modal::Pinned | Modal::Inbox | Modal::Profile | Modal::MemberActions | Modal::None => {}
                 }
                 cx.notify();
             })));
@@ -889,7 +1424,7 @@ impl Render for UTAchat {
                 .when(self.direct_mode, |row| row.child(self.render_direct_sidebar(cx)))
                 .when(!self.direct_mode && self.selected_server.is_some(), |row| row.child(self.render_channel_sidebar(cx)))
                 .when(self.direct_mode || self.selected_server.is_some(), |row| row.child(self.render_chat(cx)))
-                .when(!self.direct_mode && self.selected_server.is_some() && self.show_members, |row| row.child(self.render_members()))
+                .when(!self.direct_mode && self.selected_server.is_some() && self.show_members, |row| row.child(self.render_members(cx)))
                 .when(!self.direct_mode && self.selected_server.is_none(), |row| row.child(self.render_empty(cx))));
         if let Some(error) = &self.error {
             app = app.child(div().absolute().top(px(12.)).right(px(16.)).w(px(400.)).p_3()
@@ -911,7 +1446,7 @@ fn input_frame(state: &Entity<InputState>) -> AnyElement {
         .into_any_element()
 }
 
-fn render_message(message: &ChatMessage, continuation: bool, current_user: Option<Uuid>, direct: bool, expanded: bool, cx: &mut Context<UTAchat>) -> AnyElement {
+fn render_message(message: &ChatMessage, continuation: bool, current_user: Option<Uuid>, direct: bool, expanded: bool, can_pin: bool, cx: &mut Context<UTAchat>) -> AnyElement {
     let avatar = initials(&message.author.username);
     let color = avatar_color(message.author.id);
     let channel = message.channel_id;
@@ -940,6 +1475,18 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
                 cx.notify();
             })));
     }
+
+    if can_pin {
+        let pinned = message.pinned_at.is_some();
+        actions = actions.child(div().id(format!("pin-{id}"))
+            .cursor_pointer().text_xs().text_color(rgb(theme_color("muted")))
+            .child(if pinned { "Unpin" } else { "Pin" })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.issue(Command::SetPin { channel, message: id, pinned: !pinned });
+                this.action_message = None;
+                cx.notify();
+            })));
+    }
     if !direct {
         actions = actions.child(div().id(format!("react-{id}")).text_xs().text_color(rgb(theme_color("muted")))
             .cursor_pointer().child("Like").on_click(cx.listener(move |this, _, _, cx| {
@@ -959,7 +1506,9 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
         .when(!continuation, |el| el.child(div().flex().items_center().gap_3()
             .child(div().text_size(px(14.5)).font_weight(FontWeight::BOLD).child(message.author.username.clone()))
             .child(div().text_size(px(11.5)).text_color(rgb(theme_color("subtle"))).child(message.created_at.format("%d %b %Y, %H:%M").to_string()))
-            .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(theme_color("subtle"))).child("edited")))))
+            .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(theme_color("subtle"))).child("edited")))
+            .when(message.pinned_at.is_some(), |el| el.child(div().text_xs()
+                .text_color(rgb(theme_color("link"))).child("Pinned"))))
         .when_some(message.reply_to, |el, replied| el.child(div().text_xs().text_color(rgb(theme_color("link")))
             .child(format!("Reply to {}", &replied.to_string()[..8]))))
         .child(div().flex().items_start().justify_between().gap_3()

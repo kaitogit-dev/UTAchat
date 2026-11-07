@@ -5,7 +5,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{mpsc as async_mpsc, watch};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
-use utachat_shared::{ApiError, AuthResponse, Channel, ChatMessage, CredentialRequest, GatewayMessage, InviteResponse, Member, MessageRequest, NameRequest, PublicUser, Server, DirectRequest, DirectThread, Friend, EditMessageRequest, ReactionRequest};
+use utachat_shared::{ApiError, AuthResponse, Channel, ChatMessage, CredentialRequest, GatewayMessage, InviteResponse, Member, MessageRequest, NameRequest, PublicUser, Server, DirectRequest, DirectThread, Friend, EditMessageRequest, ReactionRequest, UserProfile, ProfileUpdate, SearchHit, ChannelUnread, Notification, RoleRequest, BanRequest};
 
 #[derive(Clone)]
 pub enum Command {
@@ -33,6 +33,21 @@ pub enum Command {
     EditMessage { channel: Uuid, message: Uuid, content: String, direct: bool },
     DeleteMessage { channel: Uuid, message: Uuid, direct: bool },
     React { channel: Uuid, message: Uuid, kind: String },
+    FetchProfile,
+    UpdateProfile { bio: String, status: String },
+    Search { server: Uuid, query: String },
+    FetchPins(Uuid),
+    SetPin { channel: Uuid, message: Uuid, pinned: bool },
+    FetchNotifications,
+    MarkNotificationsRead,
+    FetchUnreads,
+    MarkRead(Uuid),
+    LocateChannel(Uuid),
+    SetMemberRole { server: Uuid, user: Uuid, role: String },
+    KickMember { server: Uuid, user: Uuid },
+    BanMember { server: Uuid, user: Uuid, reason: String },
+    RenameServer { server: Uuid, name: String },
+    RenameChannel { server: Uuid, channel: Uuid, name: String },
 }
 
 pub enum UiEvent {
@@ -54,6 +69,18 @@ pub enum UiEvent {
     MessageUpdated(ChatMessage),
     MessageDeleted { channel: Uuid, message: Uuid },
     MessageReactions(Uuid),
+    Profile(UserProfile),
+    ProfileSaved(UserProfile),
+    LocatedChannel(Channel),
+    SearchResults(Vec<SearchHit>),
+    PinnedMessages(Vec<ChatMessage>),
+    Notifications(Vec<Notification>),
+    Unreads(Vec<ChannelUnread>),
+    RoleChanged,
+    MemberKicked(Uuid),
+    MemberBanned(Uuid),
+    ServerRenamed(Server),
+    ChannelRenamed(Channel),
     Gateway(GatewayMessage),
     Connection(bool),
     Error(String),
@@ -158,6 +185,10 @@ async fn load_social(client: &Client, base: &str, token: &str, events: &Sender<U
     let friends = get::<Vec<Friend>>(client, base, "/v1/friends", token).await?;
     let _ = events.send(UiEvent::DirectThreads(threads));
     let _ = events.send(UiEvent::Friends(friends));
+    let profile = get::<UserProfile>(client, base, "/v1/me/profile", token).await?;
+    let _ = events.send(UiEvent::Profile(profile));
+    let unread = get::<Vec<ChannelUnread>>(client, base, "/v1/unreads", token).await?;
+    let _ = events.send(UiEvent::Unreads(unread));
     Ok(())
 }
 
@@ -273,6 +304,9 @@ async fn execute(command: Command, client: &Client, base: &str, token: &str, eve
         Command::SelectChannel(channel) => {
             let messages = get(client, base, &format!("/v1/channels/{channel}/messages"), token).await?;
             let _ = events.send(UiEvent::Messages { channel, items: messages });
+            request_empty(client, Method::POST, format!("{base}/v1/channels/{channel}/read"), token, Option::<&()>::None).await?;
+            let unreads = get::<Vec<ChannelUnread>>(client, base, "/v1/unreads", token).await?;
+            let _ = events.send(UiEvent::Unreads(unreads));
         }
         Command::LoadOlder { channel, before } => {
             let messages = get(client, base, &format!("/v1/channels/{channel}/messages?before={before}"), token).await?;
@@ -342,6 +376,79 @@ async fn execute(command: Command, client: &Client, base: &str, token: &str, eve
         Command::React { channel, message, kind } => {
             request_empty(client, Method::POST, format!("{base}/v1/channels/{channel}/messages/{message}/reactions"), token, Some(&ReactionRequest { kind })).await?;
             let _ = events.send(UiEvent::MessageReactions(channel));
+        }
+        Command::FetchProfile => {
+            let profile = get::<UserProfile>(client, base, "/v1/me/profile", token).await?;
+            let _ = events.send(UiEvent::Profile(profile));
+        }
+        Command::UpdateProfile { bio, status } => {
+            let profile = request::<UserProfile>(client, Method::PATCH, &format!("{base}/v1/me/profile"), Some(token), Some(&ProfileUpdate { bio, status })).await?;
+            let _ = events.send(UiEvent::ProfileSaved(profile));
+        }
+        Command::Search { server, query } => {
+            let search = reqwest::Url::parse_with_params(&format!("{base}/v1/servers/{server}/search"), &[("q", query.as_str())])
+                .map_err(|error| error.to_string())?;
+            let hits = request::<Vec<SearchHit>>(client, Method::GET, search.as_str(), Some(token), Option::<&()>::None).await?;
+            let _ = events.send(UiEvent::SearchResults(hits));
+        }
+        Command::FetchPins(channel) => {
+            let pinned = get::<Vec<ChatMessage>>(client, base, &format!("/v1/channels/{channel}/pins"), token).await?;
+            let _ = events.send(UiEvent::PinnedMessages(pinned));
+        }
+        Command::SetPin { channel, message, pinned } => {
+            let method = if pinned { Method::PUT } else { Method::DELETE };
+            request_empty(client, method, format!("{base}/v1/channels/{channel}/messages/{message}/pin"), token, Option::<&()>::None).await?;
+            let _ = events.send(UiEvent::MessageReactions(channel));
+            let pinned = get::<Vec<ChatMessage>>(client, base, &format!("/v1/channels/{channel}/pins"), token).await?;
+            let _ = events.send(UiEvent::PinnedMessages(pinned));
+        }
+        Command::FetchNotifications => {
+            let items = get::<Vec<Notification>>(client, base, "/v1/notifications", token).await?;
+            let _ = events.send(UiEvent::Notifications(items));
+        }
+        Command::MarkNotificationsRead => {
+            request_empty(client, Method::POST, format!("{base}/v1/notifications/read"), token, Option::<&()>::None).await?;
+            let items = get::<Vec<Notification>>(client, base, "/v1/notifications", token).await?;
+            let _ = events.send(UiEvent::Notifications(items));
+        }
+        Command::FetchUnreads => {
+            let items = get::<Vec<ChannelUnread>>(client, base, "/v1/unreads", token).await?;
+            let _ = events.send(UiEvent::Unreads(items));
+        }
+        Command::LocateChannel(channel) => {
+            let item = get::<Channel>(client, base, &format!("/v1/channels/{channel}/info"), token).await?;
+            let _ = events.send(UiEvent::LocatedChannel(item));
+        }
+        Command::MarkRead(channel) => {
+            request_empty(client, Method::POST, format!("{base}/v1/channels/{channel}/read"), token, Option::<&()>::None).await?;
+            let items = get::<Vec<ChannelUnread>>(client, base, "/v1/unreads", token).await?;
+            let _ = events.send(UiEvent::Unreads(items));
+        }
+        Command::SetMemberRole { server, user, role } => {
+            request_empty(client, Method::PATCH, format!("{base}/v1/servers/{server}/members/{user}"), token, Some(&RoleRequest { role })).await?;
+            let _ = events.send(UiEvent::RoleChanged);
+            let members = get::<Vec<Member>>(client, base, &format!("/v1/servers/{server}/members"), token).await?;
+            let _ = events.send(UiEvent::Members { server, items: members });
+        }
+        Command::KickMember { server, user } => {
+            request_empty(client, Method::DELETE, format!("{base}/v1/servers/{server}/members/{user}"), token, Option::<&()>::None).await?;
+            let _ = events.send(UiEvent::MemberKicked(user));
+            let members = get::<Vec<Member>>(client, base, &format!("/v1/servers/{server}/members"), token).await?;
+            let _ = events.send(UiEvent::Members { server, items: members });
+        }
+        Command::BanMember { server, user, reason } => {
+            request_empty(client, Method::POST, format!("{base}/v1/servers/{server}/bans/{user}"), token, Some(&BanRequest { reason })).await?;
+            let _ = events.send(UiEvent::MemberBanned(user));
+            let members = get::<Vec<Member>>(client, base, &format!("/v1/servers/{server}/members"), token).await?;
+            let _ = events.send(UiEvent::Members { server, items: members });
+        }
+        Command::RenameServer { server, name } => {
+            let updated = request::<Server>(client, Method::PATCH, &format!("{base}/v1/servers/{server}"), Some(token), Some(&NameRequest { name })).await?;
+            let _ = events.send(UiEvent::ServerRenamed(updated));
+        }
+        Command::RenameChannel { server, channel, name } => {
+            let updated = request::<Channel>(client, Method::PATCH, &format!("{base}/v1/servers/{server}/channels/{channel}"), Some(token), Some(&NameRequest { name })).await?;
+            let _ = events.send(UiEvent::ChannelRenamed(updated));
         }
         Command::CreateServer(name) => {
             let server = post::<Server, _>(client, base, "/v1/servers", Some(token), &NameRequest { name }).await?;

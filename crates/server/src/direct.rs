@@ -142,7 +142,7 @@ pub async fn send_message(State(state):State<AppState>,headers:HeaderMap,Path(th
     let row=sqlx::query("INSERT INTO direct_messages(id,thread_id,author_id,content,reply_to) VALUES($1,$2,$3,$4,$5) RETURNING created_at")
         .bind(id).bind(thread).bind(user.id).bind(text).bind(input.reply_to).fetch_one(&state.db).await?;
     let message=ChatMessage{id,channel_id:thread,author:user.clone(),content:text.to_string(),
-        created_at:row.get("created_at"),edited_at:None,reply_to:input.reply_to,reactions:Vec::new()};
+        created_at:row.get("created_at"),edited_at:None,reply_to:input.reply_to,reactions:Vec::new(),pinned_at:None};
     if let Err(error)=crate::profile::save_notification(&state,peer.id,&user,"direct_message",None,Some(thread),Some(id)).await {
         tracing::warn!(message_id=%id,error=%error.message,"Direct message notification could not be persisted");
     }
