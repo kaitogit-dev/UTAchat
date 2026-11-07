@@ -693,7 +693,7 @@ impl UTAchat {
                             cx.notify();
                         }))))
                     .when(!self.connected, |el| el.child(div().text_xs()
-                        .text_color(rgb(theme_color("reconnecting"))).child("Reconnecting"))))
+                        .text_color(rgb(theme_color("reconnecting"))).child("Reconnecting")))))
             .child(stream);
         if self.selected_channel.is_some() {
             center = center.child(div().px_5().pb_5().pt_2()
