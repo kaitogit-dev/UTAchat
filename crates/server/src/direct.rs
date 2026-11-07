@@ -26,7 +26,7 @@ fn message_from(row:sqlx::postgres::PgRow,thread:Uuid)->ChatMessage{
     ChatMessage{id:row.get("id"),channel_id:thread,
         author:PublicUser{id:row.get("author_id"),username:row.get("username")},
         content:row.get("content"),created_at:row.get("created_at"),
-        edited_at:row.get("edited_at"),reply_to:row.get("reply_to"),reactions:Vec::new()}
+        edited_at:row.get("edited_at"),reply_to:row.get("reply_to"),reactions:Vec::new(),pinned_at:None}
 }
 
 pub async fn friends(State(state):State<AppState>,headers:HeaderMap)->ApiResult<Json<Vec<Friend>>>{
@@ -58,6 +58,9 @@ pub async fn request_friend(State(state):State<AppState>,headers:HeaderMap,Json(
             sqlx::query("INSERT INTO friendships(user_a,user_b,requested_by,status) VALUES($1,$2,$3,'pending')")
                 .bind(a).bind(b).bind(user.id).execute(&state.db).await?;
         }
+    }
+    if let Err(error)=crate::profile::save_notification(&state,peer.id,&user,"friend_request",None,None,None).await {
+        tracing::warn!(error=%error.message,"Friend notification could not be persisted");
     }
     let _=state.events.send(Broadcast::users(vec![user.id,peer.id],GatewayMessage::FriendsChanged));
     Ok(StatusCode::NO_CONTENT)
@@ -140,6 +143,9 @@ pub async fn send_message(State(state):State<AppState>,headers:HeaderMap,Path(th
         .bind(id).bind(thread).bind(user.id).bind(text).bind(input.reply_to).fetch_one(&state.db).await?;
     let message=ChatMessage{id,channel_id:thread,author:user.clone(),content:text.to_string(),
         created_at:row.get("created_at"),edited_at:None,reply_to:input.reply_to,reactions:Vec::new()};
+    if let Err(error)=crate::profile::save_notification(&state,peer.id,&user,"direct_message",None,Some(thread),Some(id)).await {
+        tracing::warn!(message_id=%id,error=%error.message,"Direct message notification could not be persisted");
+    }
     let _=state.events.send(Broadcast::users(vec![user.id,peer.id],GatewayMessage::DirectMessageCreated{message:message.clone()}));
     Ok((StatusCode::CREATED,Json(message)))
 }

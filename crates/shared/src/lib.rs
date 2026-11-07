@@ -48,6 +48,8 @@ pub struct ChatMessage {
     pub reply_to: Option<Uuid>,
     #[serde(default)]
     pub reactions: Vec<ReactionCount>,
+    #[serde(default)]
+    pub pinned_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,6 +85,61 @@ pub struct EditMessageRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReactionRequest {
     pub kind: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub id: Uuid,
+    pub username: String,
+    pub bio: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProfileUpdate {
+    pub bio: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub message: ChatMessage,
+    pub channel_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChannelUnread {
+    pub channel_id: Uuid,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: Uuid,
+    pub kind: String,
+    pub actor: PublicUser,
+    pub channel_id: Option<Uuid>,
+    pub thread_id: Option<Uuid>,
+    pub message_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub read_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RoleRequest {
+    pub role: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BanRequest {
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BanEntry {
+    pub user: PublicUser,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,7 +184,13 @@ pub enum GatewayMessage {
     DirectMessageUpdated { message: ChatMessage },
     DirectMessageDeleted { channel_id: Uuid, message_id: Uuid },
     FriendsChanged,
+    NotificationCreated { notification: Notification },
+    ProfileUpdated { profile: UserProfile },
+    PinsChanged { channel_id: Uuid },
+    MemberRemoved { server_id: Uuid, user_id: Uuid },
+    MemberRoleChanged { server_id: Uuid, user_id: Uuid, role: String },
     ChannelCreated { channel: Channel },
+    ChannelDeleted { server_id: Uuid, channel_id: Uuid },
     MemberJoined { server_id: Uuid, member: Member },
     Error { message: String },
 }

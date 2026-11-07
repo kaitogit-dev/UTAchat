@@ -2,6 +2,9 @@ mod auth;
 mod data;
 mod direct;
 mod message_actions;
+mod profile;
+mod search;
+mod moderation;
 mod error;
 mod gateway;
 
@@ -60,12 +63,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/auth/login", post(auth::login))
         .route("/v1/auth/logout", post(auth::logout))
         .route("/v1/me", get(auth::me))
+        .route("/v1/me/profile", get(profile::my_profile).patch(profile::update_profile))
+        .route("/v1/users/{user}", get(profile::get_profile))
+        .route("/v1/notifications", get(profile::list_notifications))
+        .route("/v1/notifications/read", post(profile::clear_notifications))
+        .route("/v1/unreads", get(profile::unread_channels))
         .route("/v1/servers", get(data::list_servers).post(data::create_server))
+        .route("/v1/servers/{server}", axum::routing::patch(moderation::rename_server))
+        .route("/v1/servers/{server}/search", get(search::search))
+        .route("/v1/servers/{server}/bans", get(moderation::list_bans))
+        .route("/v1/servers/{server}/bans/{user}", post(moderation::ban).delete(moderation::unban))
+        .route("/v1/servers/{server}/members/{user}", axum::routing::patch(moderation::set_role).delete(moderation::kick))
+        .route("/v1/servers/{server}/channels/{channel}", axum::routing::patch(moderation::rename_channel).delete(moderation::delete_channel))
         .route("/v1/servers/{server}/channels", get(data::list_channels).post(data::create_channel))
         .route("/v1/servers/{server}/members", get(data::list_members))
         .route("/v1/servers/{server}/invite", get(data::get_invite))
         .route("/v1/invites/{code}/join", post(data::join_invite))
         .route("/v1/channels/{channel}/messages", get(data::list_messages).post(data::send_message))
+        .route("/v1/channels/{channel}/read", post(profile::mark_channel_read))
+        .route("/v1/channels/{channel}/pins", get(search::pinned))
+        .route("/v1/channels/{channel}/messages/{message}/pin", axum::routing::put(search::pin).delete(search::unpin))
         .route("/v1/channels/{channel}/messages/{message}", axum::routing::patch(message_actions::edit).delete(message_actions::delete))
         .route("/v1/channels/{channel}/messages/{message}/reactions", post(message_actions::react))
         .route("/v1/friends", get(direct::friends))

@@ -80,6 +80,12 @@ jobs:
               assert posted["content"] == "Persisted message"
               edited = request("PATCH", "/v1/channels/" + channel["id"] + "/messages/" + posted["id"], {"content": "Edited and persisted"}, token)
               assert edited["edited_at"] and edited["content"] == "Edited and persisted"
+              profile = request("PATCH", "/v1/me/profile", {"bio": "Testing the online profile", "status": "idle"}, token)
+              assert profile["bio"] == "Testing the online profile" and profile["status"] == "idle"
+              assert request("GET", "/v1/users/" + auth["user"]["id"], token=token)["bio"] == profile["bio"]
+              assert request("GET", "/v1/servers/" + server["id"] + "/search?q=persisted", token=token)[0]["message"]["id"] == posted["id"]
+              request("PUT", "/v1/channels/" + channel["id"] + "/messages/" + posted["id"] + "/pin", token=token)
+              assert request("GET", "/v1/channels/" + channel["id"] + "/pins", token=token)[0]["pinned_at"]
               reaction = request("POST", "/v1/channels/" + channel["id"] + "/messages/" + posted["id"] + "/reactions", {"kind": "like"}, token)
               reply = request("POST", "/v1/channels/" + channel["id"] + "/messages", {"content": "Reply", "reply_to": posted["id"]}, token)
               assert reply["reply_to"] == posted["id"]
@@ -87,6 +93,16 @@ jobs:
               token2 = auth2["token"]
               invite = request("GET", "/v1/servers/" + server["id"] + "/invite", token=token)
               request("POST", "/v1/invites/" + invite["code"] + "/join", token=token2)
+              request("POST", "/v1/channels/" + channel["id"] + "/messages", {"content": "Hello @utachatci2"}, token)
+              notices = request("GET", "/v1/notifications", token=token2)
+              assert any(item["kind"] == "mention" for item in notices)
+              unreads = request("GET", "/v1/unreads", token=token2)
+              assert any(item["channel_id"] == channel["id"] and item["count"] > 0 for item in unreads)
+              request("POST", "/v1/channels/" + channel["id"] + "/read", token=token2)
+              unreads = request("GET", "/v1/unreads", token=token2)
+              assert all(item["count"] == 0 for item in unreads if item["channel_id"] == channel["id"])
+              request("POST", "/v1/notifications/read", token=token2)
+              assert all(item["read_at"] for item in request("GET", "/v1/notifications", token=token2))
               request("POST", "/v1/friends/requests", {"username": "utachatci2"}, token)
               requests2 = request("GET", "/v1/friends", token=token2)
               assert len(requests2) == 1 and requests2[0]["incoming"]
@@ -103,6 +119,22 @@ jobs:
               assert dm_reply["reply_to"] == dm_message["id"]
               request("DELETE", "/v1/dms/" + dm["id"] + "/messages/" + dm_reply["id"], token=token2)
               assert len(request("GET", "/v1/dms/" + dm["id"] + "/messages", token=token)) == 1
+              request("PATCH", "/v1/servers/" + server["id"] + "/members/" + auth2["user"]["id"], {"role": "moderator"}, token)
+              members = request("GET", "/v1/servers/" + server["id"] + "/members", token=token2)
+              assert any(member["role"] == "moderator" and member["user"]["id"] == auth2["user"]["id"] for member in members)
+              request("DELETE", "/v1/channels/" + channel["id"] + "/messages/" + reply["id"], token=token2)
+              request("DELETE", "/v1/channels/" + channel["id"] + "/messages/" + posted["id"] + "/pin", token=token2)
+              assert not request("GET", "/v1/channels/" + channel["id"] + "/pins", token=token2)
+              request("POST", "/v1/servers/" + server["id"] + "/bans/" + auth2["user"]["id"], {"reason": "CI moderation"}, token)
+              bans = request("GET", "/v1/servers/" + server["id"] + "/bans", token=token)
+              assert bans[0]["user"]["id"] == auth2["user"]["id"]
+              try:
+                  request("POST", "/v1/invites/" + invite["code"] + "/join", token=token2)
+                  raise AssertionError("Banned user rejoined")
+              except urllib.error.HTTPError as err:
+                  assert err.code == 403
+              request("DELETE", "/v1/servers/" + server["id"] + "/bans/" + auth2["user"]["id"], token=token)
+              request("POST", "/v1/invites/" + invite["code"] + "/join", token=token2)
               process.terminate()
               process.wait(timeout=10)
               process = start()

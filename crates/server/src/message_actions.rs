@@ -12,7 +12,7 @@ pub async fn edit(State(state):State<AppState>,headers:HeaderMap,Path((channel,m
     let modified=sqlx::query("UPDATE messages SET content=$1,edited_at=NOW() WHERE id=$2 AND channel_id=$3 AND author_id=$4")
         .bind(text).bind(message).bind(channel).bind(user.id).execute(&state.db).await?;
     if modified.rows_affected()==0{return Err(AppError::not_found());}
-    let row=sqlx::query("SELECT m.id,m.channel_id,m.author_id,u.username,m.content,m.created_at,m.edited_at,m.reply_to,COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',reactions.kind,'count',reactions.total)) FROM (SELECT kind,COUNT(*) AS total FROM message_reactions WHERE message_id=m.id GROUP BY kind) reactions),'[]'::jsonb) AS reactions FROM messages m JOIN users u ON u.id=m.author_id WHERE m.id=$1 AND m.channel_id=$2")
+    let row=sqlx::query("SELECT m.id,m.channel_id,m.author_id,u.username,m.content,m.created_at,m.edited_at,m.reply_to,m.pinned_at,COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',reactions.kind,'count',reactions.total)) FROM (SELECT kind,COUNT(*) AS total FROM message_reactions WHERE message_id=m.id GROUP BY kind) reactions),'[]'::jsonb) AS reactions FROM messages m JOIN users u ON u.id=m.author_id WHERE m.id=$1 AND m.channel_id=$2")
         .bind(message).bind(channel).fetch_one(&state.db).await?;
     let updated=message_from(row);
     let _=state.events.send(Broadcast::server(server,GatewayMessage::MessageUpdated{message:updated.clone()}));
@@ -26,7 +26,7 @@ pub async fn delete(State(state):State<AppState>,headers:HeaderMap,Path((channel
     let author:Option<Uuid>=sqlx::query_scalar("SELECT author_id FROM messages WHERE id=$1 AND channel_id=$2")
         .bind(message).bind(channel).fetch_optional(&state.db).await?;
     let Some(author)=author else{return Err(AppError::not_found());};
-    if author!=user.id&&role!="owner"{return Err(AppError::forbidden());}
+    if author!=user.id&&role!="owner"&&role!="moderator"{return Err(AppError::forbidden());}
     sqlx::query("DELETE FROM messages WHERE id=$1 AND channel_id=$2")
         .bind(message).bind(channel).execute(&state.db).await?;
     let _=state.events.send(Broadcast::server(server,GatewayMessage::MessageDeleted{channel_id:channel,message_id:message}));

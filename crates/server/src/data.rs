@@ -36,7 +36,7 @@ pub fn message_from(row: sqlx::postgres::PgRow) -> ChatMessage {
         id: row.get("id"), channel_id: row.get("channel_id"),
         author: PublicUser { id: row.get("author_id"), username: row.get("username") },
         content: row.get("content"), created_at: row.get("created_at"),
-        edited_at: row.get("edited_at"), reply_to: row.get("reply_to"),
+        edited_at: row.get("edited_at"), reply_to: row.get("reply_to"), pinned_at: row.get("pinned_at"),
         reactions: serde_json::from_value::<Vec<ReactionCount>>(row.get("reactions")).unwrap_or_default(),
     }
 }
@@ -77,7 +77,7 @@ pub async fn list_channels(State(state): State<AppState>, headers: HeaderMap, Pa
 
 pub async fn create_channel(State(state): State<AppState>, headers: HeaderMap, Path(server): Path<Uuid>, Json(input): Json<NameRequest>) -> ApiResult<(StatusCode, Json<Channel>)> {
     let user = current_user(&state, &headers).await?;
-    if membership(&state, server, user.id).await? != "owner" {
+    if !matches!(membership(&state, server, user.id).await?.as_str(), "owner" | "moderator") {
         return Err(AppError::forbidden());
     }
     let name = input.name.trim().to_lowercase().replace(' ', "-");
@@ -101,7 +101,7 @@ pub async fn create_channel(State(state): State<AppState>, headers: HeaderMap, P
 pub async fn list_members(State(state): State<AppState>, headers: HeaderMap, Path(server): Path<Uuid>) -> ApiResult<Json<Vec<Member>>> {
     let user = current_user(&state, &headers).await?;
     membership(&state, server, user.id).await?;
-    let rows = sqlx::query("SELECT u.id, u.username, m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.server_id = $1 ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, LOWER(u.username)")
+    let rows = sqlx::query("SELECT u.id, u.username, m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.server_id = $1 ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'moderator' THEN 1 ELSE 2 END, LOWER(u.username)")
         .bind(server).fetch_all(&state.db).await?;
     Ok(Json(rows.into_iter().map(|r| Member { user: PublicUser { id: r.get("id"), username: r.get("username") }, role: r.get("role") }).collect()))
 }
@@ -119,7 +119,10 @@ pub async fn join_invite(State(state): State<AppState>, headers: HeaderMap, Path
     let row = sqlx::query("SELECT id, name, owner_id FROM servers WHERE invite_code = $1")
         .bind(code.trim()).fetch_optional(&state.db).await?.ok_or_else(AppError::not_found)?;
     let server = server_from(row);
-    sqlx::query("INSERT INTO memberships (server_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING")
+    let banned:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM server_bans WHERE server_id=$1 AND user_id=$2)")
+        .bind(server.id).bind(user.id).fetch_one(&state.db).await?;
+    if banned {return Err(AppError::forbidden());}
+    sqlx::query("INSERT INTO memberships (server_id, user_id, role) SELECT $1, $2, 'member' WHERE NOT EXISTS (SELECT 1 FROM server_bans WHERE server_id=$1 AND user_id=$2) ON CONFLICT DO NOTHING")
         .bind(server.id).bind(user.id).execute(&state.db).await?;
     let member = Member { user, role: "member".to_string() };
     let _ = state.events.send(Broadcast::server(server.id, GatewayMessage::MemberJoined { server_id: server.id, member }));
@@ -133,12 +136,12 @@ pub async fn list_messages(State(state): State<AppState>, headers: HeaderMap, Pa
     let limit = query.limit.unwrap_or(100).clamp(1, 100);
     let rows = if let Some(before) = query.before {
         sqlx::query(
-            "SELECT m.id, m.channel_id, m.author_id, u.username, m.content, m.created_at, m.edited_at, m.reply_to, COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', grouped.kind, 'count', grouped.total)) FROM (SELECT kind, COUNT(*) AS total FROM message_reactions WHERE message_id = m.id GROUP BY kind) grouped), '[]'::jsonb) AS reactions FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = $1 AND (m.created_at, m.id) < (SELECT created_at, id FROM messages WHERE id = $2 AND channel_id = $3) ORDER BY m.created_at DESC, m.id DESC LIMIT $4"
+            "SELECT m.id, m.channel_id, m.author_id, u.username, m.content, m.created_at, m.edited_at, m.reply_to, m.pinned_at, COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', grouped.kind, 'count', grouped.total)) FROM (SELECT kind, COUNT(*) AS total FROM message_reactions WHERE message_id = m.id GROUP BY kind) grouped), '[]'::jsonb) AS reactions FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = $1 AND (m.created_at, m.id) < (SELECT created_at, id FROM messages WHERE id = $2 AND channel_id = $3) ORDER BY m.created_at DESC, m.id DESC LIMIT $4"
         )
             .bind(channel).bind(before).bind(channel).bind(limit).fetch_all(&state.db).await?
     } else {
         sqlx::query(
-            "SELECT m.id, m.channel_id, m.author_id, u.username, m.content, m.created_at, m.edited_at, m.reply_to, COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', grouped.kind, 'count', grouped.total)) FROM (SELECT kind, COUNT(*) AS total FROM message_reactions WHERE message_id = m.id GROUP BY kind) grouped), '[]'::jsonb) AS reactions FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = $1 ORDER BY m.created_at DESC, m.id DESC LIMIT $2"
+            "SELECT m.id, m.channel_id, m.author_id, u.username, m.content, m.created_at, m.edited_at, m.reply_to, m.pinned_at, COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', grouped.kind, 'count', grouped.total)) FROM (SELECT kind, COUNT(*) AS total FROM message_reactions WHERE message_id = m.id GROUP BY kind) grouped), '[]'::jsonb) AS reactions FROM messages m JOIN users u ON u.id = m.author_id WHERE m.channel_id = $1 ORDER BY m.created_at DESC, m.id DESC LIMIT $2"
         )
             .bind(channel).bind(limit).fetch_all(&state.db).await?
     };
@@ -163,7 +166,10 @@ pub async fn send_message(State(state): State<AppState>, headers: HeaderMap, Pat
     let id = Uuid::new_v4();
     let row = sqlx::query("INSERT INTO messages (id, channel_id, author_id, content, reply_to) VALUES ($1, $2, $3, $4, $5) RETURNING created_at")
         .bind(id).bind(channel).bind(user.id).bind(text).bind(input.reply_to).fetch_one(&state.db).await?;
-    let message = ChatMessage { id, channel_id: channel, author: user, content: text.to_string(), created_at: row.get("created_at"), edited_at: None, reply_to: input.reply_to, reactions: Vec::new() };
+    let message = ChatMessage { id, channel_id: channel, author: user.clone(), content: text.to_string(), created_at: row.get("created_at"), edited_at: None, reply_to: input.reply_to, reactions: Vec::new(), pinned_at: None };
+    if let Err(error)=crate::profile::mention_notifications(&state,server,channel,message.id,&user,&message.content).await {
+        tracing::warn!(message_id=%message.id,error=%error.message,"Mention notifications could not be persisted");
+    }
     let _ = state.events.send(Broadcast::server(server, GatewayMessage::MessageCreated { message: message.clone() }));
     Ok((StatusCode::CREATED, Json(message)))
 }
