@@ -63,7 +63,7 @@ pub fn initialize() -> Result<FileAssets> {
         }
     }
     let assets = folder.join("assets");
-    for name in ["icons/utachat-mark.svg", "icons/send.svg", "icons/check.svg"] {
+    for name in ["icons/utachat-mark.svg", "icons/send.svg", "icons/check.svg", "icons/compass.svg", "icons/users.svg", "icons/ellipsis.svg", "icons/new-message.svg", "icons/user-plus.svg"] {
         if !assets.join(name).is_file() {
             return Err(io::Error::other(format!("Missing application resource: assets/{name}")).into());
         }

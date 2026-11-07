@@ -176,6 +176,7 @@ jobs:
             "dist/assets/icons/compass.svg",
             "dist/assets/icons/users.svg",
             "dist/assets/icons/ellipsis.svg",
+            "dist/assets/icons/user-plus.svg",
             "dist/assets/icons/check.svg"
           )
           foreach ($file in $required) {

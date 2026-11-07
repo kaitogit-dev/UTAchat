@@ -471,7 +471,7 @@ impl UTAchat {
                 .when(!self.direct_mode, |el| el.rounded_full())
                 .bg(rgb(if self.direct_mode { theme_color("accent") } else { theme_color("server_inactive") }))
                 .flex().items_center().justify_center().cursor_pointer()
-                .font_weight(FontWeight::BOLD).text_base().child(svg().path("icons/utachat-mark.svg").size(px(30.)))
+                .font_weight(FontWeight::BOLD).text_base().child(svg().path("icons/utachat-mark.svg").size(px(30.)).text_color(rgb(theme_color("text"))))
                 .on_click(cx.listener(|this, _, _, cx| this.enter_direct(cx))))
             .child(div().h(px(2.)).w(px(34.)).bg(rgb(theme_color("line"))));
         for server in &self.servers {
@@ -494,7 +494,7 @@ impl UTAchat {
             .child("+").on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::CreateServer; this.error = None; cx.notify(); })))
             .child(div().id("join-server-trigger").size(px(44.)).rounded_full().bg(rgb(theme_color("server_action_bg")))
             .flex().items_center().justify_center().text_color(rgb(theme_color("muted"))).text_sm().cursor_pointer()
-            .child(svg().path("icons/compass.svg").size(px(23.)))
+            .child(svg().path("icons/compass.svg").size(px(23.)).text_color(rgb(theme_color("muted"))))
             .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::JoinServer; this.error = None; cx.notify(); })))
             .into_any_element()
     }
@@ -510,8 +510,8 @@ impl UTAchat {
                     .child(div().absolute().right(px(0.)).bottom(px(0.)).size(px(10.))
                         .rounded_full().bg(rgb(if self.connected { theme_color("online") } else { theme_color("reconnecting") }))))
                 .child(div().flex().flex_col().gap_1()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(username))
-                    .child(div().text_xs().text_color(rgb(theme_color("muted")))
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(username))
+                    .child(div().text_size(px(12.)).text_color(rgb(theme_color("muted")))
                         .child(if self.connected { "Online" } else { "Connecting" }))))
             .child(div().id("logout-trigger").px_2().py_2().rounded_md()
                 .cursor_pointer().text_xs().text_color(rgb(theme_color("muted")))
@@ -575,12 +575,12 @@ impl UTAchat {
                     .child(div().text_xs().text_color(rgb(theme_color("muted"))).child("PENDING")));
             }
         }
-        div().w(px(248.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
-            .child(div().h(px(56.)).px_4().border_b_1().border_color(rgb(theme_color("separator")))
+        div().w(px(240.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
+            .child(div().h(px(52.)).px_4().border_b_1().border_color(rgb(theme_color("separator")))
                 .flex().items_center().justify_between()
-                .child(div().text_base().font_weight(FontWeight::BOLD).child("Direct Messages"))
+                .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("Direct Messages"))
                 .child(div().id("new-direct").text_xs().text_color(rgb(theme_color("link"))).cursor_pointer()
-                    .flex().items_center().gap_2().child(svg().path("icons/new-message.svg").size(px(16.))).child("NEW")
+                    .flex().items_center().gap_2().child(svg().path("icons/new-message.svg").size(px(16.)).text_color(rgb(theme_color("muted")))).child("NEW")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.modal = Modal::CreateDirect;
                         this.error = None;
@@ -598,7 +598,7 @@ impl UTAchat {
             .zip(self.user.as_ref()).is_some_and(|(s, u)| s.owner_id == u.id);
         let mut channel_list = div().id("channel-scroll").flex_1().min_h_0().overflow_y_scrollbar().p_3().flex().flex_col().gap_1()
             .child(div().h(px(30.)).px_2().flex().items_center().justify_between()
-                .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted"))).child("TEXT CHANNELS"))
+                .child(div().text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted"))).child("TEXT CHANNELS"))
                 .when(can_create, |header| header.child(div().id("create-channel-trigger").cursor_pointer()
                     .text_lg().text_color(rgb(theme_color("muted"))).child("+")
                     .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::CreateChannel; this.error = None; cx.notify(); })))));
@@ -610,15 +610,18 @@ impl UTAchat {
                 .bg(rgb(if active { theme_color("selection") } else { theme_color("sidebar") }))
                 .text_color(rgb(if active { theme_color("text") } else { theme_color("muted") }))
                 .child(div().text_lg().child("#"))
-                .child(div().text_sm().font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).child(channel.name.clone()))
+                .child(div().text_size(px(14.)).font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).child(channel.name.clone()))
                 .on_click(cx.listener(move |this, _, _, cx| this.select_channel(id, cx))));
         }
-        div().w(px(248.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
-            .child(div().h(px(56.)).px_4().border_b_1().border_color(rgb(theme_color("separator")))
+        div().w(px(240.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
+            .child(div().h(px(52.)).px_4().border_b_1().border_color(rgb(theme_color("separator")))
                 .flex().items_center().justify_between()
-                .child(div().text_base().font_weight(FontWeight::BOLD).child(server_name))
-                .child(div().id("invite-trigger").cursor_pointer().text_xs().text_color(rgb(theme_color("muted")))
-                    .child("INVITE").on_click(cx.listener(|this, _, _, cx| {
+                .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(server_name))
+                .child(div().id("invite-trigger").cursor_pointer().flex().items_center().gap_2()
+                    .text_size(px(13.)).text_color(rgb(theme_color("muted")))
+                    .child(svg().path("icons/user-plus.svg").size(px(17.))
+                        .text_color(rgb(theme_color("muted"))))
+                    .child("Invite").on_click(cx.listener(|this, _, _, cx| {
                         if let Some(server) = this.selected_server {
                             this.busy = true;
                             this.issue(Command::FetchInvite(server));
@@ -630,6 +633,29 @@ impl UTAchat {
             .into_any_element()
     }
 
+    fn render_conversation_intro(&self, channel_name: &str) -> AnyElement {
+        let heading = if self.direct_mode {
+            channel_name.to_owned()
+        } else {
+            format!("Welcome to #{}", channel_name)
+        };
+        let description = if self.direct_mode {
+            format!("The beginning of your conversation with {}.", channel_name)
+        } else {
+            format!("This is the beginning of #{}.", channel_name)
+        };
+        div().w_full().flex().flex_col().items_start().gap_3()
+            .child(div().size(px(64.)).rounded_full().bg(rgb(theme_color("selection")))
+                .flex().items_center().justify_center()
+                .text_size(px(31.)).font_weight(FontWeight::BOLD)
+                .child(if self.direct_mode { "@" } else { "#" }))
+            .child(div().text_size(px(27.)).font_weight(FontWeight::BOLD).child(heading))
+            .child(div().text_size(px(14.)).text_color(rgb(theme_color("muted")))
+                .child(description))
+            .child(div().w_full().h(px(1.)).mt_4().mb_2().bg(rgb(theme_color("line"))))
+            .into_any_element()
+    }
+
     fn render_chat(&self, cx: &mut Context<Self>) -> AnyElement {
         let current_channel = self.selected_channel.and_then(|id| self.channels.iter().find(|c| c.id == id));
         let channel_name = if self.direct_mode {
@@ -638,7 +664,10 @@ impl UTAchat {
         } else {
             current_channel.map(|c| c.name.as_str()).unwrap_or("Select a channel")
         };
-        let mut stream = div().id("message-scroll").flex_1().min_h_0().track_scroll(&self.chat_scroll).overflow_y_scrollbar().px_5().py_4().flex().flex_col().gap_1();
+        let mut stream = div().id("message-scroll").flex_1().min_h_0()
+            .track_scroll(&self.chat_scroll).overflow_y_scrollbar()
+            .px_5().py_4().flex().flex_col().gap_1()
+            .child(div().flex_1().min_h(px(8.)));
         if self.has_older && self.selected_channel.is_some() {
             stream = stream.child(div().id("older-trigger").h(px(32.)).mb_4().flex().items_center().justify_center()
                 .text_xs().text_color(rgb(theme_color("link"))).cursor_pointer().child("Load earlier messages")
@@ -653,41 +682,39 @@ impl UTAchat {
                     cx.notify();
                 })));
         }
-        if self.messages.is_empty() && self.selected_channel.is_some() {
-            stream = stream.child(div().flex_1().flex().flex_col().items_start()
-                .justify_end().pb_5().gap_3()
-                .child(div().size(px(64.)).rounded_full().bg(rgb(theme_color("selection")))
-                    .flex().items_center().justify_center()
-                    .text_size(px(30.)).font_weight(FontWeight::BOLD)
-                    .child(if self.direct_mode { "@" } else { "#" }))
-                .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD)
-                    .child(if self.direct_mode {
-                        channel_name.to_string()
-                    } else {
-                        format!("Welcome to #{}", channel_name)
-                    })));
-        } else {
-            for (i, message) in self.messages.iter().enumerate() {
-                let continuation = i > 0 && self.messages[i - 1].author.id == message.author.id
-                    && (message.created_at - self.messages[i - 1].created_at).num_minutes() < 5;
-                let expanded = self.action_message == Some(message.id);
-                stream = stream.child(render_message(message, continuation,
-                    self.user.as_ref().map(|u| u.id), self.direct_mode, expanded, cx));
+        if self.selected_channel.is_some() && !self.has_older {
+            stream = stream.child(self.render_conversation_intro(channel_name));
+        }
+        for (i, message) in self.messages.iter().enumerate() {
+            let new_day = i == 0 || self.messages[i - 1].created_at.date_naive()
+                != message.created_at.date_naive();
+            if new_day {
+                stream = stream.child(div().w_full().py_3().flex().items_center().gap_3()
+                    .child(div().flex_1().h(px(1.)).bg(rgb(theme_color("line"))))
+                    .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(theme_color("muted")))
+                        .child(message.created_at.format("%B %-d, %Y").to_string()))
+                    .child(div().flex_1().h(px(1.)).bg(rgb(theme_color("line")))));
             }
+            let continuation = i > 0 && !new_day && self.messages[i - 1].author.id == message.author.id
+                && (message.created_at - self.messages[i - 1].created_at).num_minutes() < 5;
+            let expanded = self.action_message == Some(message.id);
+            stream = stream.child(render_message(message, continuation,
+                self.user.as_ref().map(|u| u.id), self.direct_mode, expanded, cx));
         }
         let mut center = div().flex_1().min_w_0().h_full().flex().flex_col().bg(rgb(theme_color("content")))
-            .child(div().h(px(56.)).bg(rgb(theme_color("header"))).border_b_1().border_color(rgb(theme_color("header_separator"))).px_5()
+            .child(div().h(px(52.)).bg(rgb(theme_color("header"))).border_b_1().border_color(rgb(theme_color("header_separator"))).px_5()
                 .flex().items_center().justify_between()
                 .child(div().flex().items_center().gap_3()
                     .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted")))
                         .child(if self.direct_mode { "@" } else { "#" }))
-                    .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child(channel_name.to_string())))
+                    .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(channel_name.to_string())))
                 .child(div().flex().items_center().gap_3()
-                    .when(!self.direct_mode, |el| el.child(div().id("members-toggle").px_2().py_2()
-                        .cursor_pointer().rounded_md().flex().items_center().gap_2()
-                        .child(svg().path("icons/users.svg").size(px(19.)))
-                        .child(div().text_xs().text_color(rgb(theme_color("muted")))
-                            .child(if self.show_members { "Hide members" } else { "Members" }))
+                    .when(!self.direct_mode, |el| el.child(div().id("members-toggle").size(px(36.))
+                        .cursor_pointer().rounded_md().flex().items_center().justify_center()
+                        .bg(rgb(if self.show_members { theme_color("selection") } else { theme_color("header") }))
+                        .child(svg().path("icons/users.svg").size(px(20.))
+                            .text_color(rgb(if self.show_members { theme_color("text") } else { theme_color("muted") })))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.show_members = !this.show_members;
                             cx.notify();
@@ -706,12 +733,12 @@ impl UTAchat {
                         })))))
                 .child(div().h(px(52.)).bg(rgb(theme_color("input_bg"))).rounded_md()
                     .pl_4().pr_2().flex().items_center().gap_3()
-                    .child(div().flex_1().min_w_0()
+                    .child(div().flex_1().min_w_0().text_size(px(15.))
                         .child(Input::new(&self.composer).appearance(false).bordered(false).w_full()))
                     .child(div().id("send-trigger").size(px(36.)).rounded_md()
-                        .bg(rgb(theme_color("accent")))
+                        .bg(rgb(theme_color("input_bg")))
                         .cursor_pointer().flex().items_center().justify_center()
-                        .child(svg().path("icons/send.svg").size(px(18.)))
+                        .child(svg().path("icons/send.svg").size(px(18.)).text_color(rgb(theme_color("muted"))))
                         .on_click(cx.listener(|this, _, window, cx| this.send_message(window, cx))))));
         }
         center.into_any_element()
@@ -879,7 +906,7 @@ impl Render for UTAchat {
 }
 
 fn input_frame(state: &Entity<InputState>) -> AnyElement {
-    div().h(px(44.)).px_3().bg(rgb(theme_color("input_bg"))).rounded_md().flex().items_center()
+    div().h(px(44.)).px_3().bg(rgb(theme_color("input_bg"))).rounded_md().flex().items_center().text_size(px(14.))
         .child(Input::new(state).appearance(false).bordered(false).w_full())
         .into_any_element()
 }
@@ -923,20 +950,20 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
     let menu_button = div().id(format!("message-options-{id}"))
         .size(px(28.)).rounded_md().bg(rgb(theme_color("selection")))
         .cursor_pointer().flex().items_center().justify_center()
-        .child(svg().path("icons/ellipsis.svg").size(px(17.)))
+        .child(svg().path("icons/ellipsis.svg").size(px(17.)).text_color(rgb(theme_color("muted"))))
         .on_click(cx.listener(move |this, _, _, cx| {
             this.action_message = if this.action_message == Some(id) { None } else { Some(id) };
             cx.notify();
         }));
     let mut body = div().flex_1().min_w_0().flex().flex_col().gap_1()
         .when(!continuation, |el| el.child(div().flex().items_center().gap_3()
-            .child(div().text_sm().font_weight(FontWeight::BOLD).child(message.author.username.clone()))
-            .child(div().text_xs().text_color(rgb(theme_color("subtle"))).child(message.created_at.format("%d %b %Y, %H:%M").to_string()))
+            .child(div().text_size(px(14.5)).font_weight(FontWeight::BOLD).child(message.author.username.clone()))
+            .child(div().text_size(px(11.5)).text_color(rgb(theme_color("subtle"))).child(message.created_at.format("%d %b %Y, %H:%M").to_string()))
             .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(theme_color("subtle"))).child("edited")))))
         .when_some(message.reply_to, |el, replied| el.child(div().text_xs().text_color(rgb(theme_color("link")))
             .child(format!("Reply to {}", &replied.to_string()[..8]))))
         .child(div().flex().items_start().justify_between().gap_3()
-            .child(div().flex_1().min_w_0().text_sm()
+            .child(div().flex_1().min_w_0().text_size(px(15.))
                 .text_color(rgb(theme_color("message_text"))).child(message.content.clone()))
             .child(menu_button))
         .when(expanded, |el| el.child(actions));
@@ -946,7 +973,7 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
                 .text_xs().child(format!("{} {}", reaction.kind, reaction.count)));
         }
     }
-    div().w_full().px_1().py_1().flex().items_start().gap_3()
+    div().w_full().px_2().py_2().flex().items_start().gap_3()
         .child(div().w(px(40.)).flex().justify_center()
             .when(!continuation, |el| el.child(div().size(px(36.)).rounded_full().bg(rgb(color))
                 .flex().items_center().justify_center().font_weight(FontWeight::BOLD).text_sm().child(avatar))))

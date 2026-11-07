@@ -3,6 +3,7 @@
 mod network;
 mod resources;
 mod ui;
+mod window_chrome;
 
 use gpui_kit::*;
 
@@ -21,6 +22,7 @@ fn main() {
             window.set_window_title("UTAchat");
             cx.new(|cx| ui::UTAchat::new(window, cx))
         }).expect("UTAchat window");
+        window_chrome::apply();
         cx.activate(true);
     });
 }
