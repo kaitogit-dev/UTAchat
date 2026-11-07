@@ -1508,7 +1508,7 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
             .child(div().text_size(px(11.5)).text_color(rgb(theme_color("subtle"))).child(message.created_at.format("%d %b %Y, %H:%M").to_string()))
             .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(theme_color("subtle"))).child("edited")))
             .when(message.pinned_at.is_some(), |el| el.child(div().text_xs()
-                .text_color(rgb(theme_color("link"))).child("Pinned"))))
+                .text_color(rgb(theme_color("link"))).child("Pinned")))))
         .when_some(message.reply_to, |el, replied| el.child(div().text_xs().text_color(rgb(theme_color("link")))
             .child(format!("Reply to {}", &replied.to_string()[..8]))))
         .child(div().flex().items_start().justify_between().gap_3()
