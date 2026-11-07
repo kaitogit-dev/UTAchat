@@ -132,7 +132,7 @@ fn configured_base() -> Result<String, String> {
     let configured = env::var("UTACHAT_API_URL").ok().or_else(|| {
         env::current_exe()
             .ok()
-            .and_then(|exe| exe.parent().map(|folder| folder.join("config.json")))
+            .and_then(|exe| exe.parent().map(|folder| folder.join("config").join("connection.json")))
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|json| serde_json::from_str::<Configuration>(&json).ok())
             .map(|config| config.api_url)

@@ -1,13 +1,17 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod network;
+mod resources;
 mod ui;
 
 use gpui_kit::*;
-use gpui_kit::assets::Assets;
 
 fn main() {
-    gpui_kit::application().with_assets(Assets).run(|cx| {
+    let assets = match resources::initialize() {
+        Ok(assets) => assets,
+        Err(error) => resources::fatal(error),
+    };
+    gpui_kit::application().with_assets(assets).run(|cx| {
         gpui_kit::init(cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1330.), px(830.)), cx)),

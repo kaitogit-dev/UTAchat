@@ -139,14 +139,50 @@ jobs:
           $header = [BitConverter]::ToInt32($bytes, 0x3c)
           $subsystem = [BitConverter]::ToUInt16($bytes, $header + 24 + 68)
           if ($subsystem -ne 2) { throw "UTAchat.exe must be a GUI application" }
-      - name: Package online client
+      - name: Package external resources
         shell: pwsh
         run: |
-          $config = Get-Content config.json -Raw | ConvertFrom-Json
+          $config = Get-Content config/connection.json -Raw | ConvertFrom-Json
           if (-not $config.api_url.StartsWith("https://")) { throw "Online API URL must be HTTPS" }
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          New-Item -ItemType Directory -Path dist/config,dist/themes,dist/assets/icons -Force | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/utachat.exe dist/UTAchat.exe
-          Copy-Item config.json dist/config.json
+          Copy-Item config/connection.json dist/config/connection.json
+          Copy-Item themes/dark.json dist/themes/dark.json
+          $registry = Join-Path $env:USERPROFILE ".cargo/registry/src"
+          $assetPackage = Get-ChildItem -Path $registry -Directory -Filter "gpui_ce_components_assets-0.3.0" -Recurse | Select-Object -First 1
+          if (-not $assetPackage) { throw "GPUI icon asset package missing" }
+          $manifest = Join-Path $assetPackage.FullName "default-icons.txt"
+          if (-not (Test-Path $manifest)) { throw "GPUI icon manifest missing" }
+          foreach ($icon in Get-Content $manifest) {
+            $icon = $icon.Trim()
+            if (-not $icon) { continue }
+            $relative = $icon.Replace("/", [IO.Path]::DirectorySeparatorChar)
+            $source = Join-Path (Join-Path $assetPackage.FullName "assets") $relative
+            $destination = Join-Path "dist/assets" $relative
+            if (-not (Test-Path $source)) { throw "Missing GPUI icon: $icon" }
+            Copy-Item $source $destination -Force
+          }
+          Copy-Item resources/icons/*.svg dist/assets/icons/ -Force
+      - name: Verify unpacked distribution
+        shell: pwsh
+        run: |
+          $required = @(
+            "dist/UTAchat.exe",
+            "dist/config/connection.json",
+            "dist/themes/dark.json",
+            "dist/assets/icons/utachat-mark.svg",
+            "dist/assets/icons/send.svg",
+            "dist/assets/icons/new-message.svg",
+            "dist/assets/icons/check.svg"
+          )
+          foreach ($file in $required) {
+            if (-not (Test-Path $file)) { throw "Missing release file: $file" }
+          }
+          $theme = Get-Content dist/themes/dark.json -Raw | ConvertFrom-Json
+          if (-not $theme.colors.accent) { throw "The external theme is incomplete" }
+          $icons = @(Get-ChildItem dist/assets/icons/*.svg)
+          if ($icons.Count -lt 100) { throw "GPUI icons were not unpacked" }
+          Write-Host "UTAchat Windows distribution: $($icons.Count) external SVG icons"
       - uses: actions/upload-artifact@v4
         with:
           name: UTAchat-Windows-x64

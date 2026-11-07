@@ -6,18 +6,8 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use uuid::Uuid;
 use utachat_shared::{AuthResponse, Channel, ChatMessage, DirectThread, Friend, GatewayMessage, Member, PublicUser, Server};
 use crate::network::{self, Command, Network, UiEvent};
+use crate::resources::theme_color;
 
-const RAIL: u32 = 0x17181b;
-const SIDEBAR: u32 = 0x222327;
-const CONTENT: u32 = 0x303136;
-const HEADER: u32 = 0x2b2c31;
-const MEMBER_BG: u32 = 0x28292e;
-const INPUT_BG: u32 = 0x383a42;
-const TEXT: u32 = 0xf3f4f7;
-const MUTED: u32 = 0xa6a8b0;
-const SUBTLE: u32 = 0x747781;
-const ACCENT: u32 = 0x5865f2;
-const LINE: u32 = 0x3a3c43;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Modal {
@@ -426,23 +416,23 @@ impl UTAchat {
     fn render_auth(&self, cx: &mut Context<Self>) -> AnyElement {
         let label = if self.register { "Create account" } else { "Sign in" };
         div()
-            .size_full().bg(rgb(CONTENT)).font_family("Segoe UI").text_color(rgb(TEXT)).flex().items_center().justify_center()
+            .size_full().bg(rgb(theme_color("content"))).font_family("Segoe UI").text_color(rgb(theme_color("text"))).flex().items_center().justify_center()
             .child(
-                div().w(px(420.)).bg(rgb(SIDEBAR)).rounded_lg().p_8().flex().flex_col().gap_5()
+                div().w(px(420.)).bg(rgb(theme_color("sidebar"))).rounded_lg().p_8().flex().flex_col().gap_5()
                     .child(div().text_size(px(27.)).font_weight(FontWeight::BOLD).child("UTAchat"))
-                    .child(div().text_size(px(13.)).text_color(rgb(MUTED)).child(if self.register { "Create your UTAchat account" } else { "Sign in to UTAchat" }))
+                    .child(div().text_size(px(13.)).text_color(rgb(theme_color("muted"))).child(if self.register { "Create your UTAchat account" } else { "Sign in to UTAchat" }))
                     .child(div().flex().flex_col().gap_2()
-                        .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(MUTED)).child("USERNAME"))
+                        .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted"))).child("USERNAME"))
                         .child(input_frame(&self.username)))
                     .child(div().flex().flex_col().gap_2()
-                        .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(MUTED)).child("PASSWORD"))
+                        .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted"))).child("PASSWORD"))
                         .child(input_frame(&self.password)))
-                    .when_some(self.error.as_ref(), |el, error| el.child(div().text_sm().text_color(rgb(0xf27f7f)).child(error.clone())))
+                    .when_some(self.error.as_ref(), |el, error| el.child(div().text_sm().text_color(rgb(theme_color("danger_text"))).child(error.clone())))
                     .child(div().id("submit-auth").h(px(44.)).flex().items_center().justify_center()
-                        .rounded_md().bg(rgb(ACCENT)).cursor_pointer().font_weight(FontWeight::SEMIBOLD)
+                        .rounded_md().bg(rgb(theme_color("accent"))).cursor_pointer().font_weight(FontWeight::SEMIBOLD)
                         .child(if self.busy { "Connecting" } else { label })
                         .on_click(cx.listener(|this, _, _, cx| this.submit_auth(cx))))
-                    .child(div().id("toggle-auth").text_sm().text_color(rgb(0x9da8ff)).cursor_pointer()
+                    .child(div().id("toggle-auth").text_sm().text_color(rgb(theme_color("auth_link"))).cursor_pointer()
                         .child(if self.register { "Already have an account? Sign in" } else { "Need an account? Register" })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.register = !this.register;
@@ -453,12 +443,12 @@ impl UTAchat {
     }
 
     fn render_server_rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut rail = div().w(px(72.)).h_full().bg(rgb(RAIL)).py_3().flex().flex_col().items_center().gap_3()
-            .child(div().id("home-direct").size(px(46.)).rounded_lg().bg(rgb(ACCENT))
+        let mut rail = div().w(px(72.)).h_full().bg(rgb(theme_color("rail"))).py_3().flex().flex_col().items_center().gap_3()
+            .child(div().id("home-direct").size(px(46.)).rounded_lg().bg(rgb(theme_color("accent")))
                 .flex().items_center().justify_center().cursor_pointer()
-                .font_weight(FontWeight::BOLD).text_base().child("UTA")
+                .font_weight(FontWeight::BOLD).text_base().child(svg().path("icons/utachat-mark.svg").size(px(30.)))
                 .on_click(cx.listener(|this, _, _, cx| this.enter_direct(cx))))
-            .child(div().h(px(2.)).w(px(34.)).bg(rgb(LINE)));
+            .child(div().h(px(2.)).w(px(34.)).bg(rgb(theme_color("line"))));
         for server in &self.servers {
             let id = server.id;
             let name = server.name.chars().take(2).collect::<String>().to_uppercase();
@@ -466,30 +456,30 @@ impl UTAchat {
             rail = rail.child(
                 div().id(format!("server-{id}")).size(px(46.))
                     .rounded_md().flex().items_center().justify_center()
-                    .bg(rgb(if active { ACCENT } else { 0x33353e }))
-                    .text_color(rgb(TEXT)).font_weight(FontWeight::SEMIBOLD).text_sm()
+                    .bg(rgb(if active { theme_color("accent") } else { theme_color("server_inactive") }))
+                    .text_color(rgb(theme_color("text"))).font_weight(FontWeight::SEMIBOLD).text_sm()
                     .cursor_pointer().child(name)
                     .on_click(cx.listener(move |this, _, _, cx| this.select_server(id, cx)))
             );
         }
-        rail.child(div().id("create-server-trigger").size(px(44.)).rounded_md().bg(rgb(0x2e3038))
-            .flex().items_center().justify_center().text_color(rgb(0x58c998)).text_xl().cursor_pointer()
+        rail.child(div().id("create-server-trigger").size(px(44.)).rounded_md().bg(rgb(theme_color("server_action_bg")))
+            .flex().items_center().justify_center().text_color(rgb(theme_color("server_add"))).text_xl().cursor_pointer()
             .child("+").on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::CreateServer; this.error = None; cx.notify(); })))
-            .child(div().id("join-server-trigger").size(px(44.)).rounded_md().bg(rgb(0x2e3038))
-            .flex().items_center().justify_center().text_color(rgb(MUTED)).text_sm().cursor_pointer()
+            .child(div().id("join-server-trigger").size(px(44.)).rounded_md().bg(rgb(theme_color("server_action_bg")))
+            .flex().items_center().justify_center().text_color(rgb(theme_color("muted"))).text_sm().cursor_pointer()
             .child("JOIN").on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::JoinServer; this.error = None; cx.notify(); })))
             .into_any_element()
     }
 
     fn render_direct_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = div().flex_1().min_h_0().overflow_y_scrollbar().p_3().flex().flex_col().gap_2()
-            .child(div().px_2().py_2().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(MUTED)).child("DIRECT MESSAGES"));
+            .child(div().px_2().py_2().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted"))).child("DIRECT MESSAGES"));
         for thread in &self.directs {
             let id = thread.id;
             let active = self.selected_channel == Some(id);
             list = list.child(div().id(format!("dm-{id}")).h(px(39.)).px_3().rounded_md()
                 .flex().items_center().gap_3().cursor_pointer()
-                .bg(rgb(if active { 0x3b3d45 } else { SIDEBAR }))
+                .bg(rgb(if active { theme_color("selection") } else { theme_color("sidebar") }))
                 .child(div().size(px(28.)).rounded_full().bg(rgb(avatar_color(thread.peer.id)))
                     .flex().items_center().justify_center().text_xs().font_weight(FontWeight::BOLD)
                     .child(initials(&thread.peer.username)))
@@ -497,15 +487,15 @@ impl UTAchat {
                 .on_click(cx.listener(move |this, _, _, cx| this.select_direct(id, cx))));
         }
         list = list.child(div().px_2().pt_3().pb_1().text_xs().font_weight(FontWeight::BOLD)
-            .text_color(rgb(MUTED)).child("FRIENDS"));
+            .text_color(rgb(theme_color("muted"))).child("FRIENDS"));
         for friend in &self.friends {
             let id = friend.user.id;
             let name = friend.user.username.clone();
             if friend.status == "accepted" {
                 let username = name.clone();
                 list = list.child(div().h(px(34.)).px_3().flex().items_center().justify_between()
-                    .child(div().text_sm().text_color(rgb(TEXT)).child(name))
-                    .child(div().id(format!("message-friend-{id}")).text_xs().text_color(rgb(0xaeb6ff))
+                    .child(div().text_sm().text_color(rgb(theme_color("text"))).child(name))
+                    .child(div().id(format!("message-friend-{id}")).text_xs().text_color(rgb(theme_color("link")))
                         .cursor_pointer().child("MESSAGE")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.busy = true;
@@ -515,20 +505,21 @@ impl UTAchat {
             } else if friend.incoming {
                 list = list.child(div().h(px(34.)).px_3().flex().items_center().justify_between()
                     .child(div().text_sm().child(name))
-                    .child(div().id(format!("accept-friend-{id}")).text_xs().text_color(rgb(0x5ad4a0))
+                    .child(div().id(format!("accept-friend-{id}")).text_xs().text_color(rgb(theme_color("friend_accept")))
                         .cursor_pointer().child("ACCEPT")
                         .on_click(cx.listener(move |this, _, _, cx| this.issue(Command::AcceptFriend(id))))));
             } else {
                 list = list.child(div().h(px(34.)).px_3().flex().items_center().justify_between()
-                    .child(div().text_sm().text_color(rgb(MUTED)).child(name))
-                    .child(div().text_xs().text_color(rgb(MUTED)).child("PENDING")));
+                    .child(div().text_sm().text_color(rgb(theme_color("muted"))).child(name))
+                    .child(div().text_xs().text_color(rgb(theme_color("muted"))).child("PENDING")));
             }
         }
-        div().w(px(248.)).h_full().flex().flex_col().bg(rgb(SIDEBAR))
-            .child(div().h(px(56.)).px_4().border_b_1().border_color(rgb(0x18191c))
+        div().w(px(248.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
+            .child(div().h(px(56.)).px_4().border_b_1().border_color(rgb(theme_color("separator")))
                 .flex().items_center().justify_between()
                 .child(div().text_base().font_weight(FontWeight::BOLD).child("Messages"))
-                .child(div().id("new-direct").text_xs().text_color(rgb(0xaeb6ff)).cursor_pointer().child("NEW")
+                .child(div().id("new-direct").text_xs().text_color(rgb(theme_color("link"))).cursor_pointer()
+                    .flex().items_center().gap_2().child(svg().path("icons/new-message.svg").size(px(16.))).child("NEW")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.modal = Modal::CreateDirect;
                         this.error = None;
@@ -536,13 +527,13 @@ impl UTAchat {
                     }))))
             .child(list)
             .child(div().h(px(48.)).px_4().flex().items_center().justify_between()
-                .child(div().id("add-friend").text_xs().text_color(rgb(0xaeb6ff)).cursor_pointer()
+                .child(div().id("add-friend").text_xs().text_color(rgb(theme_color("link"))).cursor_pointer()
                     .child("ADD FRIEND").on_click(cx.listener(|this, _, _, cx| {
                         this.modal = Modal::AddFriend;
                         this.error = None;
                         cx.notify();
                     })))
-                .child(div().id("dm-logout").text_xs().cursor_pointer().text_color(rgb(MUTED))
+                .child(div().id("dm-logout").text_xs().cursor_pointer().text_color(rgb(theme_color("muted")))
                     .child("EXIT").on_click(cx.listener(|this, _, _, cx| this.issue(Command::Logout)))))
         .into_any_element()
     }
@@ -554,27 +545,27 @@ impl UTAchat {
             .zip(self.user.as_ref()).is_some_and(|(s, u)| s.owner_id == u.id);
         let mut channel_list = div().id("channel-scroll").flex_1().min_h_0().overflow_y_scrollbar().p_3().flex().flex_col().gap_1()
             .child(div().h(px(30.)).px_2().flex().items_center().justify_between()
-                .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(MUTED)).child("TEXT CHANNELS"))
+                .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted"))).child("theme_color("text") CHANNELS"))
                 .when(can_create, |header| header.child(div().id("create-channel-trigger").cursor_pointer()
-                    .text_lg().text_color(rgb(MUTED)).child("+")
+                    .text_lg().text_color(rgb(theme_color("muted"))).child("+")
                     .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::CreateChannel; this.error = None; cx.notify(); })))));
         for channel in &self.channels {
             let id = channel.id;
             let active = Some(id) == self.selected_channel;
             channel_list = channel_list.child(div().id(format!("channel-{id}")).h(px(34.)).px_3().rounded_md()
                 .flex().items_center().gap_2().cursor_pointer()
-                .bg(rgb(if active { 0x3b3d45 } else { SIDEBAR }))
-                .text_color(rgb(if active { TEXT } else { MUTED }))
+                .bg(rgb(if active { theme_color("selection") } else { theme_color("sidebar") }))
+                .text_color(rgb(if active { theme_color("text") } else { theme_color("muted") }))
                 .child(div().text_lg().child("#"))
                 .child(div().text_sm().font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).child(channel.name.clone()))
                 .on_click(cx.listener(move |this, _, _, cx| this.select_channel(id, cx))));
         }
         let username = self.user.as_ref().map(|u| u.username.as_str()).unwrap_or_default();
-        div().w(px(248.)).h_full().flex().flex_col().bg(rgb(SIDEBAR))
-            .child(div().h(px(56.)).px_4().border_b_1().border_color(rgb(0x18191c))
+        div().w(px(248.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
+            .child(div().h(px(56.)).px_4().border_b_1().border_color(rgb(theme_color("separator")))
                 .flex().items_center().justify_between()
                 .child(div().text_base().font_weight(FontWeight::BOLD).child(server_name))
-                .child(div().id("invite-trigger").cursor_pointer().text_xs().text_color(rgb(MUTED))
+                .child(div().id("invite-trigger").cursor_pointer().text_xs().text_color(rgb(theme_color("muted")))
                     .child("INVITE").on_click(cx.listener(|this, _, _, cx| {
                         if let Some(server) = this.selected_server {
                             this.busy = true;
@@ -583,12 +574,12 @@ impl UTAchat {
                         cx.notify();
                     }))))
             .child(channel_list)
-            .child(div().h(px(58.)).bg(rgb(0x1c1d21)).px_3().flex().items_center().justify_between()
+            .child(div().h(px(58.)).bg(rgb(theme_color("profile_bar"))).px_3().flex().items_center().justify_between()
             .child(div().flex().items_center().gap_2()
-                .child(div().size(px(32.)).rounded_full().bg(rgb(0x627d92)).flex().items_center().justify_center()
+                .child(div().size(px(32.)).rounded_full().bg(rgb(theme_color("avatar_0"))).flex().items_center().justify_center()
                     .text_sm().font_weight(FontWeight::BOLD).child(initials(username)))
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(username.to_string())))
-            .child(div().id("logout-trigger").text_xs().text_color(rgb(MUTED)).cursor_pointer().child("EXIT")
+            .child(div().id("logout-trigger").text_xs().text_color(rgb(theme_color("muted"))).cursor_pointer().child("EXIT")
                 .on_click(cx.listener(|this, _, _, cx| this.issue(Command::Logout)))))
             .into_any_element()
     }
@@ -604,7 +595,7 @@ impl UTAchat {
         let mut stream = div().id("message-scroll").flex_1().min_h_0().track_scroll(&self.chat_scroll).overflow_y_scrollbar().px_5().py_4().flex().flex_col().gap_1();
         if self.has_older && self.selected_channel.is_some() {
             stream = stream.child(div().id("older-trigger").h(px(32.)).mb_4().flex().items_center().justify_center()
-                .text_xs().text_color(rgb(0xaeb6ff)).cursor_pointer().child("Load earlier messages")
+                .text_xs().text_color(rgb(theme_color("link"))).cursor_pointer().child("Load earlier messages")
                 .on_click(cx.listener(|this, _, _, cx| {
                     if let (Some(channel), Some(oldest)) = (this.selected_channel, this.messages.first()) {
                         if this.direct_mode {
@@ -618,7 +609,7 @@ impl UTAchat {
         }
         if self.messages.is_empty() && self.selected_channel.is_some() {
             stream = stream.child(div().flex_1().flex().items_center().justify_center()
-                .text_sm().text_color(rgb(MUTED)).child("No messages in this channel"));
+                .text_sm().text_color(rgb(theme_color("muted"))).child("No messages in this channel"));
         } else {
             for (i, message) in self.messages.iter().enumerate() {
                 let continuation = i > 0 && self.messages[i - 1].author.id == message.author.id
@@ -626,30 +617,31 @@ impl UTAchat {
                 stream = stream.child(render_message(message, continuation, self.user.as_ref().map(|u| u.id), self.direct_mode, cx));
             }
         }
-        let mut center = div().flex_1().min_w_0().h_full().flex().flex_col().bg(rgb(CONTENT))
-            .child(div().h(px(56.)).bg(rgb(HEADER)).border_b_1().border_color(rgb(0x25262a)).px_5()
+        let mut center = div().flex_1().min_w_0().h_full().flex().flex_col().bg(rgb(theme_color("content")))
+            .child(div().h(px(56.)).bg(rgb(theme_color("header"))).border_b_1().border_color(rgb(theme_color("header_separator"))).px_5()
                 .flex().items_center().justify_between()
                 .child(div().flex().items_center().gap_3()
-                    .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(rgb(MUTED))
+                    .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted")))
                         .child(if self.direct_mode { "@" } else { "#" }))
                     .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child(channel_name.to_string())))
                 .child(div().flex().items_center().gap_2()
-                    .child(div().size(px(7.)).rounded_full().bg(rgb(if self.connected { 0x46b77c } else { 0xdc9e59 })))
-                    .child(div().text_xs().text_color(rgb(MUTED)).child(if self.connected { "Connected" } else { "Reconnecting" }))))
+                    .child(div().size(px(7.)).rounded_full().bg(rgb(if self.connected { theme_color("online") } else { theme_color("reconnecting") })))
+                    .child(div().text_xs().text_color(rgb(theme_color("muted"))).child(if self.connected { "Connected" } else { "Reconnecting" }))))
             .child(stream);
         if self.selected_channel.is_some() {
             center = center.child(div().px_5().pb_5().pt_2()
                 .when_some(self.reply_to, |el, id| el.child(div().h(px(28.)).flex().items_center().gap_3()
-                    .child(div().text_xs().text_color(rgb(MUTED)).child(format!("Reply to {}", &id.to_string()[..8])))
-                    .child(div().id("cancel-reply").text_xs().cursor_pointer().text_color(rgb(0xaeb6ff))
+                    .child(div().text_xs().text_color(rgb(theme_color("muted"))).child(format!("Reply to {}", &id.to_string()[..8])))
+                    .child(div().id("cancel-reply").text_xs().cursor_pointer().text_color(rgb(theme_color("link")))
                         .child("CANCEL").on_click(cx.listener(|this, _, _, cx| {
                             this.reply_to = None;
                             cx.notify();
                         })))))
-                .child(div().h(px(48.)).bg(rgb(INPUT_BG)).rounded_md().px_4().flex().items_center().gap_3()
+                .child(div().h(px(48.)).bg(rgb(theme_color("input_bg"))).rounded_md().px_4().flex().items_center().gap_3()
                     .child(div().flex_1().min_w_0().child(Input::new(&self.composer).appearance(false).bordered(false).w_full()))
-                    .child(div().id("send-trigger").px_3().py_2().rounded_md().bg(rgb(ACCENT))
-                        .cursor_pointer().text_xs().font_weight(FontWeight::BOLD)
+                    .child(div().id("send-trigger").px_3().py_2().rounded_md().bg(rgb(theme_color("accent")))
+                        .cursor_pointer().flex().items_center().gap_2().text_xs().font_weight(FontWeight::BOLD)
+                        .child(svg().path("icons/send.svg").size(px(16.)))
                         .child(if self.sending { "SENDING" } else { "SEND" })
                         .on_click(cx.listener(|this, _, window, cx| this.send_message(window, cx))))));
         }
@@ -657,31 +649,31 @@ impl UTAchat {
     }
 
     fn render_members(&self) -> AnyElement {
-        let mut body = div().w(px(222.)).h_full().bg(rgb(MEMBER_BG)).flex().flex_col()
+        let mut body = div().w(px(222.)).h_full().bg(rgb(theme_color("member_bg"))).flex().flex_col()
             .child(div().h(px(56.)).px_4().flex().items_center()
-                .child(div().text_xs().text_color(rgb(MUTED)).font_weight(FontWeight::BOLD)
+                .child(div().text_xs().text_color(rgb(theme_color("muted"))).font_weight(FontWeight::BOLD)
                     .child(format!("MEMBERS — {}", self.members.len()))))
-            .child(div().h(px(1.)).bg(rgb(LINE)));
+            .child(div().h(px(1.)).bg(rgb(theme_color("line"))));
         for member in &self.members {
             let name = member.user.username.clone();
             body = body.child(div().h(px(47.)).px_4().flex().items_center().gap_3()
-                .child(div().size(px(31.)).rounded_full().bg(rgb(if member.role == "owner" { 0x846b93 } else { 0x477f8b }))
+                .child(div().size(px(31.)).rounded_full().bg(rgb(if member.role == "owner" { theme_color("owner_avatar") } else { theme_color("member_avatar") }))
                     .flex().items_center().justify_center().text_sm().font_weight(FontWeight::BOLD).child(initials(&name)))
                 .child(div().flex().flex_col().gap_1()
-                    .child(div().text_sm().text_color(rgb(TEXT)).child(name))
-                    .when(member.role == "owner", |el| el.child(div().text_xs().text_color(rgb(MUTED)).child("OWNER")))));
+                    .child(div().text_sm().text_color(rgb(theme_color("text"))).child(name))
+                    .when(member.role == "owner", |el| el.child(div().text_xs().text_color(rgb(theme_color("muted"))).child("OWNER")))));
         }
         body.into_any_element()
     }
 
     fn render_empty(&self, cx: &mut Context<Self>) -> AnyElement {
-        div().flex_1().bg(rgb(CONTENT)).flex().flex_col().items_center().justify_center().gap_5()
+        div().flex_1().bg(rgb(theme_color("content"))).flex().flex_col().items_center().justify_center().gap_5()
             .child(div().text_size(px(30.)).font_weight(FontWeight::BOLD).child("Make a space of your own"))
-            .child(div().text_sm().text_color(rgb(MUTED)).child("Create a server or join one with an invite code."))
+            .child(div().text_sm().text_color(rgb(theme_color("muted"))).child("Create a server or join one with an invite code."))
             .child(div().flex().gap_3()
-                .child(div().id("empty-create").px_5().py_3().rounded_md().bg(rgb(ACCENT)).cursor_pointer().child("Create server")
+                .child(div().id("empty-create").px_5().py_3().rounded_md().bg(rgb(theme_color("accent"))).cursor_pointer().child("Create server")
                     .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::CreateServer; cx.notify(); })))
-                .child(div().id("empty-join").px_5().py_3().rounded_md().bg(rgb(0x444650)).cursor_pointer().child("Join server")
+                .child(div().id("empty-join").px_5().py_3().rounded_md().bg(rgb(theme_color("join_button"))).cursor_pointer().child("Join server")
                     .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::JoinServer; cx.notify(); }))))
             .into_any_element()
     }
@@ -697,20 +689,20 @@ impl UTAchat {
             Modal::EditMessage => ("Edit message", Some(&self.edit_input), "SAVE"),
             Modal::None => ("", None, ""),
         };
-        let mut card = div().w(px(440.)).bg(rgb(SIDEBAR)).rounded_lg().p_6().flex().flex_col().gap_5()
+        let mut card = div().w(px(440.)).bg(rgb(theme_color("sidebar"))).rounded_lg().p_6().flex().flex_col().gap_5()
             .child(div().flex().items_center().justify_between()
                 .child(div().text_xl().font_weight(FontWeight::BOLD).child(title))
-                .child(div().id("modal-close").text_sm().text_color(rgb(MUTED)).cursor_pointer().child("CLOSE")
+                .child(div().id("modal-close").text_sm().text_color(rgb(theme_color("muted"))).cursor_pointer().child("CLOSE")
                     .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::None; this.error = None; cx.notify(); }))));
         if let Some(input) = input {
             card = card.child(input_frame(input));
         } else {
-            card = card.child(div().p_4().rounded_md().bg(rgb(INPUT_BG)).text_sm().child(self.invite_code.clone()));
+            card = card.child(div().p_4().rounded_md().bg(rgb(theme_color("input_bg"))).text_sm().child(self.invite_code.clone()));
         }
         if let Some(error) = &self.error {
-            card = card.child(div().text_sm().text_color(rgb(0xf27f7f)).child(error.clone()));
+            card = card.child(div().text_sm().text_color(rgb(theme_color("danger_text"))).child(error.clone()));
         }
-        card = card.child(div().id("modal-submit").h(px(43.)).rounded_md().bg(rgb(ACCENT)).flex().items_center()
+        card = card.child(div().id("modal-submit").h(px(43.)).rounded_md().bg(rgb(theme_color("accent"))).flex().items_center()
             .justify_center().cursor_pointer().font_weight(FontWeight::SEMIBOLD).text_sm()
             .child(if self.busy { "WORKING" } else { action })
             .on_click(cx.listener(|this, _, _, cx| {
@@ -760,7 +752,7 @@ impl UTAchat {
                 }
                 cx.notify();
             })));
-        div().absolute().inset_0().bg(rgba(0x000000bd)).flex().items_center().justify_center().child(card).into_any_element()
+        div().absolute().inset_0().bg(rgba(theme_color("overlay"))).flex().items_center().justify_center().child(card).into_any_element()
     }
 }
 
@@ -769,7 +761,7 @@ impl Render for UTAchat {
         if self.user.is_none() {
             return self.render_auth(cx);
         }
-        let mut app = div().relative().size_full().flex().flex_col().bg(rgb(CONTENT)).text_color(rgb(TEXT))
+        let mut app = div().relative().size_full().flex().flex_col().bg(rgb(theme_color("content"))).text_color(rgb(theme_color("text")))
             .font_family("Segoe UI")
             .child(div().flex_1().min_h_0().flex()
                 .child(self.render_server_rail(cx))
@@ -780,7 +772,7 @@ impl Render for UTAchat {
                 .when(!self.direct_mode && self.selected_server.is_none(), |row| row.child(self.render_empty(cx))));
         if let Some(error) = &self.error {
             app = app.child(div().absolute().top(px(12.)).right(px(16.)).w(px(400.)).p_3()
-                .bg(rgb(0x673b43)).rounded_md().flex().items_center().justify_between().gap_3()
+                .bg(rgb(theme_color("toast_bg"))).rounded_md().flex().items_center().justify_between().gap_3()
                 .child(div().flex_1().text_sm().child(error.clone()))
                 .child(div().id("dismiss-error").text_xs().cursor_pointer().child("DISMISS")
                     .on_click(cx.listener(|this, _, _, cx| { this.error = None; cx.notify(); }))));
@@ -793,7 +785,7 @@ impl Render for UTAchat {
 }
 
 fn input_frame(state: &Entity<InputState>) -> AnyElement {
-    div().h(px(44.)).px_3().bg(rgb(INPUT_BG)).rounded_md().flex().items_center()
+    div().h(px(44.)).px_3().bg(rgb(theme_color("input_bg"))).rounded_md().flex().items_center()
         .child(Input::new(state).appearance(false).bordered(false).w_full())
         .into_any_element()
 }
@@ -805,28 +797,28 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
     let id = message.id;
     let is_author = current_user == Some(message.author.id);
     let mut actions = div().flex().items_center().gap_3();
-    actions = actions.child(div().id(format!("reply-{id}")).text_xs().text_color(rgb(0xaeb6ff))
+    actions = actions.child(div().id(format!("reply-{id}")).text_xs().text_color(rgb(theme_color("link")))
         .cursor_pointer().child("REPLY").on_click(cx.listener(move |this, _, _, cx| {
             this.reply_to = Some(id);
             cx.notify();
         })));
     if is_author {
         let current_text = message.content.clone();
-        actions = actions.child(div().id(format!("edit-{id}")).text_xs().text_color(rgb(MUTED))
+        actions = actions.child(div().id(format!("edit-{id}")).text_xs().text_color(rgb(theme_color("muted")))
             .cursor_pointer().child("EDIT").on_click(cx.listener(move |this, _, window, cx| {
                 this.editing_message = Some(id);
                 this.edit_input.update(cx, |input, cx| input.set_value(current_text.clone(), window, cx));
                 this.modal = Modal::EditMessage;
                 cx.notify();
             })));
-        actions = actions.child(div().id(format!("delete-{id}")).text_xs().text_color(rgb(0xe29b9b))
+        actions = actions.child(div().id(format!("delete-{id}")).text_xs().text_color(rgb(theme_color("delete_action")))
             .cursor_pointer().child("DELETE").on_click(cx.listener(move |this, _, _, cx| {
                 this.issue(Command::DeleteMessage { channel, message: id, direct });
                 cx.notify();
             })));
     }
     if !direct {
-        actions = actions.child(div().id(format!("react-{id}")).text_xs().text_color(rgb(MUTED))
+        actions = actions.child(div().id(format!("react-{id}")).text_xs().text_color(rgb(theme_color("muted")))
             .cursor_pointer().child("LIKE").on_click(cx.listener(move |this, _, _, cx| {
                 this.issue(Command::React { channel, message: id, kind: "like".to_owned() });
                 cx.notify();
@@ -835,14 +827,14 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
     let mut body = div().flex_1().min_w_0().flex().flex_col().gap_1()
         .when(!continuation, |el| el.child(div().flex().items_center().gap_3()
             .child(div().text_sm().font_weight(FontWeight::BOLD).child(message.author.username.clone()))
-            .child(div().text_xs().text_color(rgb(SUBTLE)).child(message.created_at.format("%d %b %Y, %H:%M").to_string()))
-            .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(SUBTLE)).child("edited")))))
-        .when_some(message.reply_to, |el, replied| el.child(div().text_xs().text_color(rgb(0xaeb6ff))
+            .child(div().text_xs().text_color(rgb(theme_color("subtle"))).child(message.created_at.format("%d %b %Y, %H:%M").to_string()))
+            .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(theme_color("subtle"))).child("edited")))))
+        .when_some(message.reply_to, |el, replied| el.child(div().text_xs().text_color(rgb(theme_color("link")))
             .child(format!("Reply to {}", &replied.to_string()[..8]))))
-        .child(div().text_sm().text_color(rgb(0xe6e7eb)).child(message.content.clone()));
+        .child(div().text_sm().text_color(rgb(theme_color("message_text"))).child(message.content.clone()));
     if !message.reactions.is_empty() {
         for reaction in &message.reactions {
-            body = body.child(div().px_2().py_1().rounded_md().bg(rgb(0x3b3d45))
+            body = body.child(div().px_2().py_1().rounded_md().bg(rgb(theme_color("selection")))
                 .text_xs().child(format!("{} {}", reaction.kind, reaction.count)));
         }
     }
@@ -859,6 +851,6 @@ fn initials(name: &str) -> String {
 }
 
 fn avatar_color(user: Uuid) -> u32 {
-    const COLORS: [u32; 8] = [0x627d92, 0x85719f, 0x468b82, 0x9b795f, 0x657bb7, 0x996e7b, 0x748856, 0x867f96];
-    COLORS[(user.as_u128() % COLORS.len() as u128) as usize]
+    let colors: [u32; 8] = [theme_color("avatar_0"), theme_color("avatar_1"), theme_color("avatar_2"), theme_color("avatar_3"), theme_color("avatar_4"), theme_color("avatar_5"), theme_color("avatar_6"), theme_color("avatar_7")];
+    colors[(user.as_u128() % colors.len() as u128) as usize]
 }
