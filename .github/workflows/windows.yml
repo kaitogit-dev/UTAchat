@@ -173,6 +173,9 @@ jobs:
             "dist/assets/icons/utachat-mark.svg",
             "dist/assets/icons/send.svg",
             "dist/assets/icons/new-message.svg",
+            "dist/assets/icons/compass.svg",
+            "dist/assets/icons/users.svg",
+            "dist/assets/icons/ellipsis.svg",
             "dist/assets/icons/check.svg"
           )
           foreach ($file in $required) {
