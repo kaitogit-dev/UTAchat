@@ -936,13 +936,13 @@ impl UTAchat {
                     .child(svg().path("icons/new-message.svg").size(px(18.))
                         .text_color(rgb(theme_color("text"))))
                     .tooltip(|window, cx| Tooltip::new("New direct message").build(window, cx))
-                    .with_animation("new-direct-reveal", entrance(120),
-                        |el, t| el.opacity(t))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.modal = Modal::CreateDirect;
                         this.error = None;
                         cx.notify();
-                    }))))
+                    }))
+                    .with_animation("new-direct-reveal", entrance(120),
+                        |el, t| el.opacity(t))))
                 .on_hover(cx.listener(|this, &inside, _, cx| {
                     if this.hovered_dm_header != inside {
                         this.hovered_dm_header = inside;
@@ -972,13 +972,13 @@ impl UTAchat {
                         .text_size(px(21.)).text_color(rgb(theme_color("text")))
                         .child("+")
                         .tooltip(|window, cx| Tooltip::new("Create channel").build(window, cx))
-                        .with_animation("channel-add-reveal", entrance(120),
-                            |el, t| el.opacity(t))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.modal = Modal::CreateChannel;
                             this.error = None;
                             cx.notify();
-                        }))))
+                        }))
+                        .with_animation("channel-add-reveal", entrance(120),
+                            |el, t| el.opacity(t))))
                 .on_hover(cx.listener(|this, &inside, _, cx| {
                     if this.hovered_category != inside {
                         this.hovered_category = inside;
@@ -1019,8 +1019,6 @@ impl UTAchat {
                             .child(svg().path("icons/settings.svg").size(px(17.))
                                 .text_color(rgb(theme_color("muted"))))
                             .tooltip(|window, cx| Tooltip::new("Edit channel").build(window, cx))
-                            .with_animation(format!("channel-settings-reveal-{id}"),
-                                entrance(120), |el, t| el.opacity(t))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 if let Some(channel) = this.channels.iter().find(|channel| channel.id == id) {
@@ -1032,7 +1030,9 @@ impl UTAchat {
                                     this.error = None;
                                     cx.notify();
                                 }
-                            }))))
+                            }))
+                            .with_animation(format!("channel-settings-reveal-{id}"),
+                                entrance(120), |el, t| el.opacity(t))))
                     .on_hover(cx.listener(move |this, &inside, _, cx| {
                         if inside {
                             this.hovered_channel = Some(id);
@@ -1259,12 +1259,12 @@ impl UTAchat {
                             .child(svg().path("icons/send.svg").size(px(19.))
                                 .text_color(rgb(theme_color("muted"))))
                             .tooltip(|window, cx| Tooltip::new("Send message").build(window, cx))
-                            .with_animation("send-on-hover", entrance(125),
-                                |el, t| el.opacity(t))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.send_message(window, cx);
-                            }))))
+                            }))
+                            .with_animation("send-on-hover", entrance(125),
+                                |el, t| el.opacity(t))))
                     .on_hover(cx.listener(|this, &inside, _, cx| {
                         if this.hovered_composer != inside {
                             this.hovered_composer = inside;
@@ -1314,7 +1314,7 @@ impl UTAchat {
                     .child(div().text_sm().text_color(rgb(theme_color("text")))
                         .child(username))
                     .when(can_manage && hovered, |el| el.child(
-                        div().ml_auto().size(px(26.)).rounded_md()
+                        div().id(format!("member-action-icon-{member_id}")).ml_auto().size(px(26.)).rounded_md()
                             .flex().items_center().justify_center()
                             .child(svg().path("icons/ellipsis.svg").size(px(17.))
                                 .text_color(rgb(theme_color("muted"))))
