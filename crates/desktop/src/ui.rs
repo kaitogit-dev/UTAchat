@@ -30,6 +30,13 @@ enum Modal {
     RenameChannel,
     KickMember,
     BanMember,
+    RemoveFriend,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FriendsView {
+    All,
+    Pending,
 }
 
 pub struct UTAchat {
@@ -40,6 +47,8 @@ pub struct UTAchat {
     members: Vec<Member>,
     directs: Vec<DirectThread>,
     friends: Vec<Friend>,
+    friends_view: FriendsView,
+    selected_friend: Option<Uuid>,
     profile: Option<UserProfile>,
     search_results: Vec<SearchHit>,
     pinned_messages: Vec<ChatMessage>,
@@ -90,6 +99,7 @@ pub struct UTAchat {
     person_input: Entity<InputState>,
     edit_input: Entity<InputState>,
     search_input: Entity<InputState>,
+    friend_search: Entity<InputState>,
     bio_input: Entity<InputState>,
     rename_input: Entity<InputState>,
     ban_reason: Entity<InputState>,
@@ -107,6 +117,7 @@ impl UTAchat {
         let person_input = cx.new(|cx| InputState::new(window, cx).placeholder("Username"));
         let edit_input = cx.new(|cx| InputState::new(window, cx).placeholder("Edit message"));
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
+        let friend_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search friends"));
         let bio_input = cx.new(|cx| InputState::new(window, cx).placeholder("About me"));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("New name"));
         let ban_reason = cx.new(|cx| InputState::new(window, cx).placeholder("Reason"));
@@ -121,11 +132,15 @@ impl UTAchat {
                     this.submit_auth(cx);
                 }
             }),
+            cx.subscribe_in(&friend_search, window, |_, _, _: &InputEvent, _, cx| {
+                cx.notify();
+            }),
         ];
         let this = Self {
             net: network::start(), user: None,
             servers: Vec::new(), channels: Vec::new(), members: Vec::new(), messages: Vec::new(),
             directs: Vec::new(), friends: Vec::new(), direct_mode: true,
+            friends_view: FriendsView::All, selected_friend: None,
             profile: None, search_results: Vec::new(), pinned_messages: Vec::new(),
             notifications: Vec::new(), unreads: HashMap::new(),
             profile_status: "online".to_owned(), selected_member: None,
@@ -144,7 +159,7 @@ impl UTAchat {
             modal_close_at: None,
             invite_code: String::new(), error: None,
             username, password, composer, server_name, channel_name, invite_input,
-            person_input, edit_input, search_input, bio_input, rename_input, ban_reason,
+            person_input, edit_input, search_input, friend_search, bio_input, rename_input, ban_reason,
             _subscriptions: subscriptions,
         };
         cx.spawn_in(window, async move |weak, window_cx| {
@@ -357,6 +372,8 @@ impl UTAchat {
                     self.channels.clear();
                     self.directs.clear();
                     self.friends.clear();
+                    self.selected_friend = None;
+                    self.friends_view = FriendsView::All;
                     self.profile = None;
                     self.unreads.clear();
                     self.notifications.clear();
@@ -503,7 +520,10 @@ impl UTAchat {
                 UiEvent::Friends(items) => {
                     self.friends = items;
                     self.busy = false;
-                    if self.modal == Modal::AddFriend { self.modal = Modal::None; }
+                    if matches!(self.modal, Modal::AddFriend | Modal::RemoveFriend) {
+                        self.modal = Modal::None;
+                        self.selected_friend = None;
+                    }
                 }
                 UiEvent::DirectCreated(thread) => {
                     self.directs.retain(|entry| entry.id != thread.id);
@@ -808,150 +828,308 @@ impl UTAchat {
     }
 
     fn render_direct_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = div().id("direct-scroll").flex_1().min_h_0().overflow_y_scrollbar()
-            .p_3().flex().flex_col().gap_2()
-            .child(div().id("add-friend").h(px(38.)).px_3().rounded_md()
-                .bg(rgb(if self.hovered_add_friend {
-                    theme_color("sidebar_hover")
+        let mut direct_list = div().id("direct-scroll").flex_1().min_h_0()
+            .overflow_y_scrollbar().px_2().pt_3().pb_4()
+            .flex().flex_col().gap_1()
+            .child(div().id("friends-home-link").h(px(42.)).px_3().rounded_md()
+                .cursor_pointer().flex().items_center().gap_3()
+                .bg(rgb(if self.selected_channel.is_none() && self.direct_mode {
+                    theme_color("selection")
                 } else {
                     theme_color("sidebar")
-                })).cursor_pointer()
-                .flex().items_center().justify_between()
-                .child(div().text_size(px(14.)).text_color(rgb(theme_color("text")))
-                    .child("Add Friend"))
-                .when(self.hovered_add_friend, |el| el.child(
-                    div().size(px(24.)).flex().items_center().justify_center()
-                        .text_size(px(20.)).text_color(rgb(theme_color("muted")))
-                        .child("+")
-                        .with_animation("friend-add-reveal", entrance(110),
-                            |el, t| el.opacity(t))))
-                .on_hover(cx.listener(|this, &inside, _, cx| {
-                    if this.hovered_add_friend != inside {
-                        this.hovered_add_friend = inside;
-                        cx.notify();
-                    }
                 }))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.modal = Modal::AddFriend;
-                    this.error = None;
-                    cx.notify();
-                })))
-            .child(div().px_2().pt_2().pb_1().text_xs().font_weight(FontWeight::BOLD)
-                .text_color(rgb(theme_color("muted"))).child("DIRECT MESSAGES"));
-        for thread in &self.directs {
-            let id = thread.id;
-            let active = self.direct_mode && self.selected_channel == Some(id);
-            let hovered = self.hovered_direct == Some(id);
-            let background = if active {
-                theme_color("selection")
-            } else if hovered {
-                theme_color("sidebar_hover")
-            } else {
-                theme_color("sidebar")
-            };
-            list = list.child(div().id(format!("dm-{id}")).h(px(41.)).px_3().rounded_md()
-                .flex().items_center().gap_3().cursor_pointer().bg(rgb(background))
-                .child(div().size(px(30.)).rounded_full().bg(rgb(avatar_color(thread.peer.id)))
-                    .flex().items_center().justify_center().text_xs().font_weight(FontWeight::BOLD)
-                    .child(initials(&thread.peer.username)))
-                .child(div().text_size(px(14.)).font_weight(if active {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::NORMAL
-                }).child(thread.peer.username.clone()))
-                .on_hover(cx.listener(move |this, &inside, _, cx| {
-                    let next = if inside { Some(id) } else { None };
-                    if inside || this.hovered_direct == Some(id) {
-                        if this.hovered_direct != next {
-                            this.hovered_direct = next;
-                            cx.notify();
-                        }
-                    }
-                }))
-                .on_click(cx.listener(move |this, _, _, cx| this.select_direct(id, cx)))
-                .with_animation(format!("dm-hover-{id}-{hovered}-{active}"),
-                    entrance(140), move |el, t| el.bg(rgb(blend_color(
-                        if hovered { theme_color("sidebar") } else { theme_color("sidebar_hover") },
-                        background,
-                        t
-                    )))));
-        }
-        list = list.child(div().px_2().pt_3().pb_1().text_xs().font_weight(FontWeight::BOLD)
-            .text_color(rgb(theme_color("muted"))).child("FRIENDS"));
-        for friend in &self.friends {
-            let id = friend.user.id;
-            let name = friend.user.username.clone();
-            if friend.status == "accepted" {
-                let username = name.clone();
-                let hovered = self.hovered_friend == Some(id);
-                list = list.child(div().id(format!("friend-{id}"))
-                    .h(px(39.)).px_3().rounded_md().cursor_pointer()
-                    .bg(rgb(if hovered { theme_color("sidebar_hover") } else {
-                        theme_color("sidebar")
-                    }))
-                    .flex().items_center().justify_between()
-                    .child(div().text_size(px(14.)).text_color(rgb(theme_color("text")))
-                        .child(name))
-                    .when(hovered, |el| el.child(div().size(px(28.)).rounded_md()
-                        .flex().items_center().justify_center()
-                        .child(svg().path("icons/new-message.svg").size(px(18.))
-                            .text_color(rgb(theme_color("muted"))))
-                        .with_animation(format!("friend-action-{id}"), entrance(120),
-                            |el, t| el.opacity(t))))
-                    .on_hover(cx.listener(move |this, &inside, _, cx| {
-                        let next = if inside { Some(id) } else { None };
-                        if inside || this.hovered_friend == Some(id) {
-                            if this.hovered_friend != next {
-                                this.hovered_friend = next;
-                                cx.notify();
-                            }
-                        }
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.busy = true;
-                        this.issue(Command::CreateDirect(username.clone()));
-                        cx.notify();
-                    })));
-            } else if friend.incoming {
-                list = list.child(div().h(px(34.)).px_3().flex().items_center().justify_between()
-                    .child(div().text_sm().child(name))
-                    .child(div().id(format!("accept-friend-{id}")).text_xs().text_color(rgb(theme_color("friend_accept")))
-                        .cursor_pointer().child("ACCEPT")
-                        .on_click(cx.listener(move |this, _, _, cx| this.issue(Command::AcceptFriend(id))))));
-            } else {
-                list = list.child(div().h(px(34.)).px_3().flex().items_center().justify_between()
-                    .child(div().text_sm().text_color(rgb(theme_color("muted"))).child(name))
-                    .child(div().text_xs().text_color(rgb(theme_color("muted"))).child("PENDING")));
-            }
-        }
-        div().w(px(240.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
-            .child(div().id("dm-sidebar-header").h(px(52.)).px_4()
-                .border_b_1().border_color(rgb(theme_color("separator")))
-                .flex().items_center().justify_between()
-                .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD)
-                    .child("Direct Messages"))
-                .when(self.hovered_dm_header, |el| el.child(div().id("new-direct")
-                    .size(px(30.)).rounded_md().cursor_pointer()
+                .child(div().size(px(28.)).rounded_md()
+                    .bg(rgb(theme_color("server_action_bg")))
                     .flex().items_center().justify_center()
+                    .child(svg().path("icons/users.svg").size(px(19.))
+                        .text_color(rgb(theme_color("text")))))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD)
+                    .child("Friends"))
+                .when(self.friends.iter().any(|friend| friend.status != "accepted" && friend.incoming),
+                    |el| el.child(div().ml_auto().px_2().py_1().rounded_lg()
+                        .bg(rgb(theme_color("accent"))).text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .child(self.friends.iter().filter(|friend| friend.status != "accepted" && friend.incoming).count().to_string())))
+                .on_click(cx.listener(|this, _, _, cx| this.enter_direct(cx))))
+            .child(div().h(px(38.)).px_3().pt_2().flex().items_center().justify_between()
+                .child(div().text_size(px(11.5)).font_weight(FontWeight::BOLD)
+                    .text_color(rgb(theme_color("muted"))).child("DIRECT MESSAGES"))
+                .child(div().id("new-direct").size(px(29.)).rounded_md()
+                    .cursor_pointer().flex().items_center().justify_center()
                     .child(svg().path("icons/new-message.svg").size(px(18.))
-                        .text_color(rgb(theme_color("text"))))
+                        .text_color(rgb(theme_color("muted"))))
                     .tooltip(|window, cx| Tooltip::new("New direct message").build(window, cx))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.modal = Modal::CreateDirect;
                         this.error = None;
                         cx.notify();
-                    }))
-                    .with_animation("new-direct-reveal", entrance(120),
-                        |el, t| el.opacity(t))))
-                .on_hover(cx.listener(|this, &inside, _, cx| {
-                    if this.hovered_dm_header != inside {
-                        this.hovered_dm_header = inside;
+                    }))));
+        for thread in &self.directs {
+            let id = thread.id;
+            let active = self.direct_mode && self.selected_channel == Some(id);
+            let hovered = self.hovered_direct == Some(id);
+            let background = if active { theme_color("selection") }
+                else if hovered { theme_color("sidebar_hover") }
+                else { theme_color("sidebar") };
+            direct_list = direct_list.child(div().id(format!("dm-{id}"))
+                .h(px(44.)).px_3().rounded_md().cursor_pointer()
+                .flex().items_center().gap_3().bg(rgb(background))
+                .child(div().size(px(33.)).rounded_full()
+                    .bg(rgb(avatar_color(thread.peer.id)))
+                    .flex().items_center().justify_center()
+                    .text_size(px(12.)).font_weight(FontWeight::BOLD)
+                    .child(initials(&thread.peer.username)))
+                .child(div().min_w_0().flex_1()
+                    .text_size(px(14.))
+                    .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                    .text_color(rgb(if active || hovered { theme_color("text") }
+                        else { theme_color("muted") }))
+                    .child(thread.peer.username.clone()))
+                .on_hover(cx.listener(move |this, &inside, _, cx| {
+                    if inside && this.hovered_direct != Some(id) {
+                        this.hovered_direct = Some(id);
+                        cx.notify();
+                    } else if !inside && this.hovered_direct == Some(id) {
+                        this.hovered_direct = None;
                         cx.notify();
                     }
-                })))
-            .child(list)
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| this.select_direct(id, cx)))
+                .with_animation(format!("dm-hover-{id}-{hovered}-{active}"),
+                    entrance(135), move |el, t| el.bg(rgb(blend_color(
+                        if hovered { theme_color("sidebar") } else { theme_color("sidebar_hover") },
+                        background, t
+                    )))));
+        }
+        if self.directs.is_empty() {
+            direct_list = direct_list.child(div().px_3().py_5()
+                .text_size(px(12.)).text_color(rgb(theme_color("subtle")))
+                .child("Start a conversation to see it here."));
+        }
+        div().w(px(240.)).h_full().flex().flex_col()
+            .bg(rgb(theme_color("sidebar")))
+            .child(div().h(px(52.)).px_4()
+                .border_b_1().border_color(rgb(theme_color("separator")))
+                .flex().items_center().justify_between()
+                .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD)
+                    .child("Messages"))
+                .child(div().id("new-direct-header").size(px(30.))
+                    .cursor_pointer().rounded_md().flex().items_center().justify_center()
+                    .child(svg().path("icons/new-message.svg").size(px(18.))
+                        .text_color(rgb(theme_color("muted"))))
+                    .tooltip(|window, cx| Tooltip::new("New direct message").build(window, cx))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.modal = Modal::CreateDirect;
+                        cx.notify();
+                    }))))
+            .child(direct_list)
             .child(self.render_user_panel(cx))
-        .into_any_element()
+            .into_any_element()
+    }
+
+    fn render_friends_home(&self, cx: &mut Context<Self>) -> AnyElement {
+        let pending = self.friends.iter().filter(|friend| friend.status != "accepted").count();
+        let accepted = self.friends.iter().filter(|friend| friend.status == "accepted").count();
+        let all_selected = self.friends_view == FriendsView::All;
+        let query = self.friend_search.read(cx).value().to_string().trim().to_lowercase();
+        let filtered_count = self.friends.iter().filter(|friend|
+            (friend.status == "accepted") == all_selected &&
+            (query.is_empty() || friend.user.username.to_lowercase().contains(&query))
+        ).count();
+        let mut list = div().id("friends-home-scroll").flex_1().min_h_0()
+            .overflow_y_scrollbar().px_7().pt_5().pb_6()
+            .flex().flex_col();
+        let count = filtered_count;
+        list = list.child(div().pb_3().text_size(px(11.5))
+            .font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted")))
+            .child(if all_selected {
+                format!("ALL FRIENDS — {accepted}")
+            } else {
+                format!("PENDING — {pending}")
+            }));
+        for friend in &self.friends {
+            let accepted = friend.status == "accepted";
+            if accepted != all_selected ||
+                !query.is_empty() && !friend.user.username.to_lowercase().contains(&query) {
+                continue;
+            }
+            let id = friend.user.id;
+            let username = friend.user.username.clone();
+            let hovered = self.hovered_friend == Some(id);
+            let incoming = friend.incoming;
+            let mut row = div().id(format!("friend-home-{id}"))
+                .h(px(65.)).px_3().rounded_md()
+                .border_t_1().border_color(rgb(theme_color("line")))
+                .flex().items_center().gap_3()
+                .bg(rgb(if hovered { theme_color("sidebar_hover") } else {
+                    theme_color("content")
+                }))
+                .child(div().size(px(38.)).rounded_full()
+                    .bg(rgb(avatar_color(id)))
+                    .flex().items_center().justify_center()
+                    .text_size(px(13.)).font_weight(FontWeight::BOLD)
+                    .child(initials(&username)))
+                .child(div().min_w_0().flex_1().flex().flex_col().gap_1()
+                    .child(div().text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD).child(username.clone()))
+                    .when(!accepted, |el| el.child(div().text_size(px(12.))
+                        .text_color(rgb(theme_color("muted")))
+                        .child(if incoming { "Incoming request" } else { "Request sent" }))));
+            if accepted {
+                let peer = username.clone();
+                row = row
+                    .cursor_pointer()
+                    .when(hovered, |el| el.child(div().id(format!("friend-message-{id}"))
+                        .size(px(34.)).rounded_full()
+                        .bg(rgb(theme_color("toolbar_bg")))
+                        .flex().items_center().justify_center()
+                        .child(svg().path("icons/new-message.svg").size(px(18.))
+                            .text_color(rgb(theme_color("text"))))
+                        .tooltip(|window, cx| Tooltip::new("Send message").build(window, cx))
+                        .with_animation(format!("friend-message-reveal-{id}"),
+                            entrance(110), |el, t| el.opacity(t))))
+                    .when(hovered, |el| el.child(div().id(format!("friend-more-{id}"))
+                        .size(px(34.)).rounded_full().cursor_pointer()
+                        .bg(rgb(theme_color("toolbar_bg")))
+                        .flex().items_center().justify_center()
+                        .child(svg().path("icons/ellipsis.svg").size(px(18.))
+                            .text_color(rgb(theme_color("text"))))
+                        .tooltip(|window, cx| Tooltip::new("Friend options").build(window, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.selected_friend = Some(id);
+                            this.modal = Modal::RemoveFriend;
+                            cx.notify();
+                        }))))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.busy = true;
+                        this.issue(Command::CreateDirect(peer.clone()));
+                        cx.notify();
+                    }));
+            } else if incoming {
+                row = row.child(div().id(format!("accept-friend-{id}"))
+                    .h(px(34.)).px_4().rounded_md()
+                    .bg(rgb(theme_color("accent"))).cursor_pointer()
+                    .flex().items_center().justify_center()
+                    .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
+                    .child("Accept")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.issue(Command::AcceptFriend(id));
+                        cx.notify();
+                    })));
+            }
+            if !accepted {
+                row = row.child(div().id(format!("cancel-friend-{id}"))
+                    .size(px(34.)).rounded_full().cursor_pointer()
+                    .bg(rgb(theme_color("toolbar_bg")))
+                    .flex().items_center().justify_center()
+                    .child(svg().path("icons/close.svg").size(px(18.))
+                        .text_color(rgb(theme_color("muted"))))
+                    .tooltip(|window, cx| Tooltip::new(if incoming {
+                        "Decline request"
+                    } else {
+                        "Cancel request"
+                    }).build(window, cx))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.issue(Command::RemoveFriend(id));
+                        cx.notify();
+                    })));
+            }
+            list = list.child(row.on_hover(cx.listener(move |this, &inside, _, cx| {
+                if inside && this.hovered_friend != Some(id) {
+                    this.hovered_friend = Some(id);
+                    cx.notify();
+                } else if !inside && this.hovered_friend == Some(id) {
+                    this.hovered_friend = None;
+                    cx.notify();
+                }
+            })));
+        }
+        if count == 0 {
+            list = list.child(div().flex_1().min_h(px(320.))
+                .flex().flex_col().items_center().justify_center().gap_4()
+                .child(div().size(px(68.)).rounded_full()
+                    .bg(rgb(theme_color("sidebar")))
+                    .flex().items_center().justify_center()
+                    .child(svg().path("icons/users.svg").size(px(29.))
+                        .text_color(rgb(theme_color("muted")))))
+                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD)
+                    .child(if !query.is_empty() { "No matching friends" }
+                        else if all_selected { "No friends here yet" }
+                        else { "No pending requests" }))
+                .when(all_selected && query.is_empty(), |el| el.child(div().id("friends-empty-add")
+                    .h(px(36.)).px_5().rounded_md()
+                    .bg(rgb(theme_color("accent"))).cursor_pointer()
+                    .flex().items_center().justify_center()
+                    .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
+                    .child("Add a friend")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.modal = Modal::AddFriend;
+                        this.error = None;
+                        cx.notify();
+                    })))));
+        }
+        div().flex_1().min_w_0().h_full().flex().flex_col()
+            .bg(rgb(theme_color("content")))
+            .child(div().h(px(52.)).px_5()
+                .border_b_1().border_color(rgb(theme_color("header_separator")))
+                .flex().items_center().gap_4()
+                .child(svg().path("icons/users.svg").size(px(20.))
+                    .text_color(rgb(theme_color("muted"))))
+                .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD)
+                    .child("Friends"))
+                .child(div().h(px(24.)).w(px(1.))
+                    .bg(rgb(theme_color("line"))))
+                .child(div().id("friends-all-tab").h(px(32.)).px_3().rounded_md()
+                    .cursor_pointer().flex().items_center().justify_center()
+                    .bg(rgb(if all_selected { theme_color("selection") }
+                        else { theme_color("header") }))
+                    .text_color(rgb(if all_selected { theme_color("text") }
+                        else { theme_color("muted") }))
+                    .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
+                    .child("All")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.friends_view = FriendsView::All;
+                        cx.notify();
+                    })))
+                .child(div().id("friends-pending-tab").h(px(32.)).px_3().rounded_md()
+                    .cursor_pointer().flex().items_center().justify_center()
+                    .bg(rgb(if !all_selected { theme_color("selection") }
+                        else { theme_color("header") }))
+                    .text_color(rgb(if !all_selected { theme_color("text") }
+                        else { theme_color("muted") }))
+                    .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("Pending{}", if pending > 0 {
+                        format!(" ({pending})")
+                    } else {
+                        String::new()
+                    }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.friends_view = FriendsView::Pending;
+                        cx.notify();
+                    })))
+                .child(div().id("friends-add-header").h(px(32.)).px_3().rounded_md()
+                    .cursor_pointer().bg(rgb(theme_color("server_add")))
+                    .flex().items_center().justify_center()
+                    .text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(theme_color("rail")))
+                    .child("Add Friend")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.modal = Modal::AddFriend;
+                        this.error = None;
+                        cx.notify();
+                    }))))
+            .child(div().px_6().pt_5().pb_1()
+                .child(div().h(px(40.)).px_3().rounded_md()
+                    .bg(rgb(theme_color("input_bg")))
+                    .flex().items_center().gap_3()
+                    .child(svg().path("icons/search.svg").size(px(18.))
+                        .text_color(rgb(theme_color("subtle"))))
+                    .child(div().flex_1().min_w_0()
+                        .child(Input::new(&self.friend_search)
+                            .appearance(false).bordered(false).w_full()))))
+            .child(list)
+            .into_any_element()
     }
 
     fn render_channel_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1181,22 +1359,28 @@ impl UTAchat {
             stream = stream.child(self.render_conversation_intro(channel_name));
         }
         for (i, message) in self.messages.iter().enumerate() {
-            let new_day = i == 0 || self.messages[i - 1].created_at.date_naive()
-                != message.created_at.date_naive();
+            let created_local = message.created_at.with_timezone(&chrono::Local);
+            let new_day = i == 0 || self.messages[i - 1].created_at.with_timezone(&chrono::Local).date_naive()
+                != created_local.date_naive();
             if new_day {
                 stream = stream.child(div().w_full().px_5().py_3().flex().items_center().gap_3()
                     .child(div().flex_1().h(px(1.)).bg(rgb(theme_color("line"))))
                     .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(theme_color("muted")))
-                        .child(message.created_at.format("%B %-d, %Y").to_string()))
+                        .child(created_local.format("%B %-d, %Y").to_string()))
                     .child(div().flex_1().h(px(1.)).bg(rgb(theme_color("line")))));
             }
             let continuation = i > 0 && !new_day && self.messages[i - 1].author.id == message.author.id
                 && (message.created_at - self.messages[i - 1].created_at).num_minutes() < 5;
             let expanded = self.action_message == Some(message.id);
             let hovered = self.hovered_message == Some(message.id);
+            let replying_to = message.reply_to.map(|parent| self.messages.iter()
+                .find(|original| original.id == parent)
+                .map(|original| format!("Replying to {}", original.author.username))
+                .unwrap_or_else(|| "Replying to an earlier message".to_owned()));
             stream = stream.child(render_message(message, continuation,
-                self.user.as_ref().map(|u| u.id), self.direct_mode, expanded, hovered, can_pin, cx));
+                self.user.as_ref().map(|u| u.id), self.direct_mode,
+                expanded, hovered, can_pin, replying_to, cx));
         }
         let mut center = div().flex_1().min_w_0().h_full().flex().flex_col().bg(rgb(theme_color("content")))
             .child(div().h(px(52.)).bg(rgb(theme_color("header"))).border_b_1().border_color(rgb(theme_color("header_separator"))).px_5()
@@ -1667,6 +1851,7 @@ impl UTAchat {
             Modal::DeleteMessage => ("Delete message", None, "DELETE"),
             Modal::KickMember => ("Kick member", None, "KICK"),
             Modal::BanMember => ("Ban member", Some(&self.ban_reason), "BAN"),
+            Modal::RemoveFriend => ("Remove friend", None, "REMOVE"),
             Modal::RenameServer => ("Rename server", Some(&self.rename_input), "SAVE"),
             Modal::RenameChannel => ("Rename channel", Some(&self.rename_input), "SAVE"),
             Modal::Search | Modal::Pinned | Modal::Inbox | Modal::Profile | Modal::MemberActions | Modal::None => ("", None, ""),
@@ -1685,6 +1870,7 @@ impl UTAchat {
             let warning = match self.modal {
                 Modal::KickMember => "This member will be removed from the server.",
                 Modal::DeleteMessage => "This will permanently remove the message.",
+                Modal::RemoveFriend => "This person will be removed from your friends list.",
                 _ => "",
             };
             card = card.child(div().text_sm().text_color(rgb(theme_color("muted")))
@@ -1694,7 +1880,7 @@ impl UTAchat {
             card = card.child(div().text_sm().text_color(rgb(theme_color("danger_text"))).child(error.clone()));
         }
         card = card.child(div().id("modal-submit").h(px(43.)).rounded_md()
-            .bg(rgb(if matches!(self.modal, Modal::DeleteMessage | Modal::KickMember | Modal::BanMember) {
+            .bg(rgb(if matches!(self.modal, Modal::DeleteMessage | Modal::KickMember | Modal::BanMember | Modal::RemoveFriend) {
                 theme_color("delete_action")
             } else {
                 theme_color("accent")
@@ -1779,6 +1965,12 @@ impl UTAchat {
                             this.issue(Command::BanMember {server,user,reason});
                         }
                     }
+                    Modal::RemoveFriend => {
+                        if let Some(user) = this.selected_friend {
+                            this.busy = true;
+                            this.issue(Command::RemoveFriend(user));
+                        }
+                    }
                     Modal::Search | Modal::Pinned | Modal::Inbox | Modal::Profile | Modal::MemberActions | Modal::None => {}
                 }
                 cx.notify();
@@ -1823,7 +2015,13 @@ impl Render for UTAchat {
                     div().w(px(240.)).h_full().child(self.render_channel_sidebar(cx))
                         .with_animation(sidebar_identity, entrance(180),
                             |el, t| el.opacity(0.5 + 0.5 * t))))
-                .when(self.direct_mode || self.selected_server.is_some(), |row| row.child(
+                .when(self.direct_mode && self.selected_channel.is_none(), |row| row.child(
+                    div().flex_1().min_w_0().h_full()
+                        .child(self.render_friends_home(cx))
+                        .with_animation("friends-home", entrance(150),
+                            |el, t| el.opacity(0.65 + 0.35 * t))))
+                .when(self.selected_server.is_some() && !self.direct_mode ||
+                    self.direct_mode && self.selected_channel.is_some(), |row| row.child(
                     div().flex_1().min_w_0().h_full().child(self.render_chat(cx))
                         .with_animation(chat_identity, entrance(160),
                             |el, t| el.opacity(0.65 + 0.35 * t))))
@@ -1861,29 +2059,37 @@ fn input_frame(state: &Entity<InputState>) -> AnyElement {
         .into_any_element()
 }
 
-fn render_message(message: &ChatMessage, continuation: bool, current_user: Option<Uuid>, direct: bool, expanded: bool, hovered: bool, can_pin: bool, cx: &mut Context<UTAchat>) -> AnyElement {
+fn render_message(message: &ChatMessage, continuation: bool, current_user: Option<Uuid>, direct: bool, expanded: bool, hovered: bool, can_pin: bool, replying_to: Option<String>, cx: &mut Context<UTAchat>) -> AnyElement {
     let avatar = initials(&message.author.username);
     let color = avatar_color(message.author.id);
     let channel = message.channel_id;
     let id = message.id;
     let is_author = current_user == Some(message.author.id);
-    let mut actions = div().flex().items_center().gap_4().px_2().py_1();
-    actions = actions.child(div().id(format!("reply-{id}")).text_xs().text_color(rgb(theme_color("link")))
+    let mut actions = div().absolute().top(px(39.)).right(px(16.))
+        .w(px(196.)).p_2().rounded_lg()
+        .bg(rgb(theme_color("toolbar_bg")))
+        .border_1().border_color(rgb(theme_color("border")))
+        .flex().flex_col().gap_1();
+    actions = actions.child(div().id(format!("reply-{id}")).h(px(34.)).px_3().rounded_md()
+        .flex().items_center().text_size(px(13.))
+        .text_color(rgb(theme_color("text")))
         .cursor_pointer().child("Reply").on_click(cx.listener(move |this, _, _, cx| {
             this.reply_to = Some(id);
             cx.notify();
         })));
     if is_author {
         let current_text = message.content.clone();
-        actions = actions.child(div().id(format!("edit-{id}")).text_xs().text_color(rgb(theme_color("muted")))
-            .cursor_pointer().child("Edit").on_click(cx.listener(move |this, _, window, cx| {
+        actions = actions.child(div().id(format!("edit-{id}")).h(px(34.)).px_3().rounded_md()
+            .flex().items_center().text_size(px(13.)).text_color(rgb(theme_color("text")))
+            .cursor_pointer().child("Edit message").on_click(cx.listener(move |this, _, window, cx| {
                 this.editing_message = Some(id);
                 this.edit_input.update(cx, |input, cx| input.set_value(current_text.clone(), window, cx));
                 this.modal = Modal::EditMessage;
                 cx.notify();
             })));
-        actions = actions.child(div().id(format!("delete-{id}")).text_xs().text_color(rgb(theme_color("delete_action")))
-            .cursor_pointer().child("Delete").on_click(cx.listener(move |this, _, _, cx| {
+        actions = actions.child(div().id(format!("delete-{id}")).h(px(34.)).px_3().rounded_md()
+            .flex().items_center().text_size(px(13.)).text_color(rgb(theme_color("danger_text")))
+            .cursor_pointer().child("Delete message").on_click(cx.listener(move |this, _, _, cx| {
                 this.pending_delete = Some((channel, id, direct));
                 this.modal = Modal::DeleteMessage;
                 this.action_message = None;
@@ -1894,18 +2100,12 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
     if can_pin {
         let pinned = message.pinned_at.is_some();
         actions = actions.child(div().id(format!("pin-{id}"))
-            .cursor_pointer().text_xs().text_color(rgb(theme_color("muted")))
-            .child(if pinned { "Unpin" } else { "Pin" })
+            .h(px(34.)).px_3().rounded_md().flex().items_center()
+            .cursor_pointer().text_size(px(13.)).text_color(rgb(theme_color("text")))
+            .child(if pinned { "Unpin message" } else { "Pin message" })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.issue(Command::SetPin { channel, message: id, pinned: !pinned });
                 this.action_message = None;
-                cx.notify();
-            })));
-    }
-    if !direct {
-        actions = actions.child(div().id(format!("react-{id}")).text_xs().text_color(rgb(theme_color("muted")))
-            .cursor_pointer().child("Like").on_click(cx.listener(move |this, _, _, cx| {
-                this.issue(Command::React { channel, message: id, kind: "like".to_owned() });
                 cx.notify();
             })));
     }
@@ -1951,20 +2151,31 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
     let mut body = div().flex_1().min_w_0().flex().flex_col().gap_1()
         .when(!continuation, |el| el.child(div().flex().items_center().gap_3()
             .child(div().text_size(px(14.5)).font_weight(FontWeight::BOLD).child(message.author.username.clone()))
-            .child(div().text_size(px(11.5)).text_color(rgb(theme_color("subtle"))).child(message.created_at.format("%d %b %Y, %H:%M").to_string()))
+            .child(div().text_size(px(11.5)).text_color(rgb(theme_color("subtle"))).child(message.created_at.with_timezone(&chrono::Local).format("%d %b %Y, %H:%M").to_string()))
             .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(theme_color("subtle"))).child("edited")))
             .when(message.pinned_at.is_some(), |el| el.child(div().text_xs()
                 .text_color(rgb(theme_color("link"))).child("Pinned")))))
-        .when_some(message.reply_to, |el, replied| el.child(div().text_xs().text_color(rgb(theme_color("link")))
-            .child(format!("Reply to {}", &replied.to_string()[..8]))))
+        .when_some(replying_to, |el, replied| el.child(div().flex().items_center().gap_2()
+            .child(div().w(px(2.)).h(px(14.)).rounded_full()
+                .bg(rgb(theme_color("subtle"))))
+            .child(div().text_size(px(12.))
+                .text_color(rgb(theme_color("muted"))).child(replied))))
         .child(div().min_w_0().text_size(px(15.))
-            .text_color(rgb(theme_color("message_text"))).child(message.content.clone()))
-        .when(expanded, |el| el.child(actions));
+            .text_color(rgb(theme_color("message_text"))).child(message.content.clone()));
     if !message.reactions.is_empty() {
+        let mut reactions = div().pt_2().flex().items_center().gap_2();
         for reaction in &message.reactions {
-            body = body.child(div().px_2().py_1().rounded_md().bg(rgb(theme_color("selection")))
-                .text_xs().child(format!("{} {}", reaction.kind, reaction.count)));
+            reactions = reactions.child(div().h(px(27.)).px_3().rounded_md()
+                .border_1().border_color(rgb(theme_color("line")))
+                .bg(rgb(theme_color("sidebar_hover")))
+                .flex().items_center().gap_2()
+                .child(svg().path("icons/reaction.svg").size(px(15.))
+                    .text_color(rgb(theme_color("link"))))
+                .child(div().text_size(px(12.))
+                    .text_color(rgb(theme_color("text")))
+                    .child(format!("{} {}", reaction.kind, reaction.count))));
         }
+        body = body.child(reactions);
     }
     div().id(format!("message-row-{id}")).relative().w_full()
         .px_4().py_2().flex().items_start().gap_3()
@@ -1982,6 +2193,11 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
             format!("toolbar-entrance-{id}"),
             entrance(120),
             |el, t| el.opacity(t).mt(px((1. - t) * 5.))
+        )))
+        .when(expanded, |el| el.child(actions.with_animation(
+            format!("message-context-{id}"),
+            entrance(140),
+            |el, t| el.opacity(t).mt(px((1. - t) * 6.))
         )))
         .on_hover(cx.listener(move |this, &inside, _, cx| {
             if inside {

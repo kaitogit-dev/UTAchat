@@ -217,6 +217,7 @@ jobs:
             "dist/assets/icons/reply.svg",
             "dist/assets/icons/reaction.svg",
             "dist/assets/icons/chevron-down.svg",
+            "dist/assets/icons/close.svg",
             "dist/assets/icons/check.svg"
           )
           foreach ($file in $required) {
