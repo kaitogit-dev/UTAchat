@@ -3,6 +3,7 @@ use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use uuid::Uuid;
 use utachat_shared::{AuthResponse, Channel, ChatMessage, DirectThread, Friend, GatewayMessage, Member, PublicUser, Server, UserProfile, SearchHit, ChannelUnread, Notification};
 use crate::network::{self, Command, Network, UiEvent};
@@ -52,6 +53,16 @@ pub struct UTAchat {
     hovered_message: Option<Uuid>,
     hovered_server: Option<Uuid>,
     hovered_channel: Option<Uuid>,
+    hovered_friend: Option<Uuid>,
+    hovered_direct: Option<Uuid>,
+    hovered_member: Option<Uuid>,
+    hovered_category: bool,
+    hovered_dm_header: bool,
+    hovered_add_friend: bool,
+    hovered_server_header: bool,
+    hovered_composer: bool,
+    show_server_menu: bool,
+    renaming_channel: Option<Uuid>,
     reply_to: Option<Uuid>,
     editing_message: Option<Uuid>,
     pending_delete: Option<(Uuid, Uuid, bool)>,
@@ -120,6 +131,11 @@ impl UTAchat {
             profile_status: "online".to_owned(), selected_member: None,
             show_members: true, action_message: None,
             hovered_message: None, hovered_server: None, hovered_channel: None,
+            hovered_friend: None, hovered_direct: None, hovered_member: None,
+            hovered_category: false, hovered_dm_header: false,
+            hovered_add_friend: false, hovered_server_header: false,
+            hovered_composer: false,
+            show_server_menu: false, renaming_channel: None,
             reply_to: None, editing_message: None, pending_delete: None,
             chat_scroll: ScrollHandle::new(),
             selected_server: None, selected_channel: None, pending_channel: None,
@@ -200,6 +216,8 @@ impl UTAchat {
         self.direct_mode = false;
         self.action_message = None;
         self.hovered_message = None;
+        self.show_server_menu = false;
+        self.hovered_channel = None;
         self.reply_to = None;
         self.selected_server = Some(server);
         self.selected_channel = None;
@@ -248,6 +266,7 @@ impl UTAchat {
     fn select_channel(&mut self, channel: Uuid, cx: &mut Context<Self>) {
         if self.selected_channel == Some(channel) { return; }
         self.selected_channel = Some(channel);
+        self.show_server_menu = false;
         self.hovered_message = None;
         self.action_message = None;
         self.reply_to = None;
@@ -260,6 +279,7 @@ impl UTAchat {
 
     fn enter_direct(&mut self, cx: &mut Context<Self>) {
         self.direct_mode = true;
+        self.show_server_menu = false;
         self.action_message = None;
         self.hovered_message = None;
         self.selected_channel = None;
@@ -273,6 +293,7 @@ impl UTAchat {
     fn select_direct(&mut self, thread: Uuid, cx: &mut Context<Self>) {
         if self.direct_mode && self.selected_channel == Some(thread) { return; }
         self.direct_mode = true;
+        self.show_server_menu = false;
         self.action_message = None;
         self.hovered_message = None;
         self.selected_channel = Some(thread);
@@ -460,6 +481,7 @@ impl UTAchat {
                 UiEvent::ChannelRenamed(channel) => {
                     if let Some(item) = self.channels.iter_mut().find(|item| item.id == channel.id) { *item = channel; }
                     self.busy = false;
+                    self.renaming_channel = None;
                     self.modal = Modal::None;
                 }
                 UiEvent::LocatedChannel(channel) => {
@@ -682,11 +704,13 @@ impl UTAchat {
                 .bg(rgb(if self.direct_mode { theme_color("accent") } else { theme_color("server_inactive") }))
                 .flex().items_center().justify_center().cursor_pointer()
                 .font_weight(FontWeight::BOLD).text_base().child(svg().path("icons/utachat-mark.svg").size(px(30.)).text_color(rgb(theme_color("text"))))
+                .tooltip(|window, cx| Tooltip::new("Direct Messages").build(window, cx))
                 .on_click(cx.listener(|this, _, _, cx| this.enter_direct(cx))))
             .child(div().h(px(2.)).w(px(34.)).bg(rgb(theme_color("line"))));
         for server in &self.servers {
             let id = server.id;
             let name = server.name.chars().take(2).collect::<String>().to_uppercase();
+            let server_label = server.name.clone();
             let active = !self.direct_mode && Some(id) == self.selected_server;
             let hovered = self.hovered_server == Some(id);
             let target = if active { theme_color("accent") } else if hovered {
@@ -696,10 +720,15 @@ impl UTAchat {
             };
             rail = rail.child(
                 div().relative().w(px(60.)).h(px(48.)).flex().items_center().justify_center()
-                    .when(active, |el| el.child(div().absolute().left(px(0.)).w(px(4.)).h(px(36.))
-                        .rounded_full().bg(rgb(theme_color("text")))
-                        .with_animation(format!("server-marker-{id}"), entrance(180),
-                            |el, t| el.opacity(t).h(px(18. + 18. * t)))))
+                    .when(active || hovered, |el| el.child(
+                        div().absolute().left(px(0.)).w(px(4.))
+                            .rounded_full().bg(rgb(theme_color("text")))
+                            .with_animation(format!("server-marker-{id}-{active}-{hovered}"),
+                                entrance(160), move |el, t| {
+                                    let height = if active { 36. } else { 9. };
+                                    el.h(px(height * (0.35 + 0.65 * t)))
+                                        .opacity(0.5 + 0.5 * t)
+                                })))
                     .child(div().id(format!("server-{id}")).size(px(46.))
                         .when(active || hovered, |el| el.rounded_lg())
                         .when(!active && !hovered, |el| el.rounded_full())
@@ -708,6 +737,7 @@ impl UTAchat {
                         .text_color(rgb(theme_color("text"))).font_weight(FontWeight::SEMIBOLD)
                         .text_size(px(13.))
                         .cursor_pointer().child(name)
+                        .tooltip(move |window, cx| Tooltip::new(server_label.clone()).build(window, cx))
                         .on_hover(cx.listener(move |this, &inside, _, cx| {
                             if inside {
                                 this.hovered_server = Some(id);
@@ -729,10 +759,13 @@ impl UTAchat {
         }
         rail.child(div().id("create-server-trigger").size(px(44.)).rounded_full().bg(rgb(theme_color("server_action_bg")))
             .flex().items_center().justify_center().text_color(rgb(theme_color("server_add"))).text_xl().cursor_pointer()
-            .child("+").on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::CreateServer; this.error = None; cx.notify(); })))
+            .child("+")
+            .tooltip(|window, cx| Tooltip::new("Create server").build(window, cx))
+            .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::CreateServer; this.error = None; cx.notify(); })))
             .child(div().id("join-server-trigger").size(px(44.)).rounded_full().bg(rgb(theme_color("server_action_bg")))
             .flex().items_center().justify_center().text_color(rgb(theme_color("muted"))).text_sm().cursor_pointer()
             .child(svg().path("icons/compass.svg").size(px(23.)).text_color(rgb(theme_color("muted"))))
+            .tooltip(|window, cx| Tooltip::new("Join server").build(window, cx))
             .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::JoinServer; this.error = None; cx.notify(); })))
             .into_any_element()
     }
@@ -777,11 +810,27 @@ impl UTAchat {
     fn render_direct_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = div().id("direct-scroll").flex_1().min_h_0().overflow_y_scrollbar()
             .p_3().flex().flex_col().gap_2()
-            .child(div().id("add-friend").h(px(36.)).px_3().rounded_md()
-                .bg(rgb(theme_color("server_action_bg"))).cursor_pointer()
+            .child(div().id("add-friend").h(px(38.)).px_3().rounded_md()
+                .bg(rgb(if self.hovered_add_friend {
+                    theme_color("sidebar_hover")
+                } else {
+                    theme_color("sidebar")
+                })).cursor_pointer()
                 .flex().items_center().justify_between()
-                .child(div().text_sm().text_color(rgb(theme_color("text"))).child("Add Friend"))
-                .child(div().text_lg().text_color(rgb(theme_color("muted"))).child("+"))
+                .child(div().text_size(px(14.)).text_color(rgb(theme_color("text")))
+                    .child("Add Friend"))
+                .when(self.hovered_add_friend, |el| el.child(
+                    div().size(px(24.)).flex().items_center().justify_center()
+                        .text_size(px(20.)).text_color(rgb(theme_color("muted")))
+                        .child("+")
+                        .with_animation("friend-add-reveal", entrance(110),
+                            |el, t| el.opacity(t))))
+                .on_hover(cx.listener(|this, &inside, _, cx| {
+                    if this.hovered_add_friend != inside {
+                        this.hovered_add_friend = inside;
+                        cx.notify();
+                    }
+                }))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.modal = Modal::AddFriend;
                     this.error = None;
@@ -791,15 +840,41 @@ impl UTAchat {
                 .text_color(rgb(theme_color("muted"))).child("DIRECT MESSAGES"));
         for thread in &self.directs {
             let id = thread.id;
-            let active = self.selected_channel == Some(id);
-            list = list.child(div().id(format!("dm-{id}")).h(px(39.)).px_3().rounded_md()
-                .flex().items_center().gap_3().cursor_pointer()
-                .bg(rgb(if active { theme_color("selection") } else { theme_color("sidebar") }))
-                .child(div().size(px(28.)).rounded_full().bg(rgb(avatar_color(thread.peer.id)))
+            let active = self.direct_mode && self.selected_channel == Some(id);
+            let hovered = self.hovered_direct == Some(id);
+            let background = if active {
+                theme_color("selection")
+            } else if hovered {
+                theme_color("sidebar_hover")
+            } else {
+                theme_color("sidebar")
+            };
+            list = list.child(div().id(format!("dm-{id}")).h(px(41.)).px_3().rounded_md()
+                .flex().items_center().gap_3().cursor_pointer().bg(rgb(background))
+                .child(div().size(px(30.)).rounded_full().bg(rgb(avatar_color(thread.peer.id)))
                     .flex().items_center().justify_center().text_xs().font_weight(FontWeight::BOLD)
                     .child(initials(&thread.peer.username)))
-                .child(div().text_sm().child(thread.peer.username.clone()))
-                .on_click(cx.listener(move |this, _, _, cx| this.select_direct(id, cx))));
+                .child(div().text_size(px(14.)).font_weight(if active {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::NORMAL
+                }).child(thread.peer.username.clone()))
+                .on_hover(cx.listener(move |this, &inside, _, cx| {
+                    let next = if inside { Some(id) } else { None };
+                    if inside || this.hovered_direct == Some(id) {
+                        if this.hovered_direct != next {
+                            this.hovered_direct = next;
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| this.select_direct(id, cx)))
+                .with_animation(format!("dm-hover-{id}-{hovered}-{active}"),
+                    entrance(140), move |el, t| el.bg(rgb(blend_color(
+                        if hovered { theme_color("sidebar") } else { theme_color("sidebar_hover") },
+                        background,
+                        t
+                    )))));
         }
         list = list.child(div().px_2().pt_3().pb_1().text_xs().font_weight(FontWeight::BOLD)
             .text_color(rgb(theme_color("muted"))).child("FRIENDS"));
@@ -808,15 +883,35 @@ impl UTAchat {
             let name = friend.user.username.clone();
             if friend.status == "accepted" {
                 let username = name.clone();
-                list = list.child(div().h(px(34.)).px_3().flex().items_center().justify_between()
-                    .child(div().text_sm().text_color(rgb(theme_color("text"))).child(name))
-                    .child(div().id(format!("message-friend-{id}")).text_xs().text_color(rgb(theme_color("link")))
-                        .cursor_pointer().child("MESSAGE")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.busy = true;
-                            this.issue(Command::CreateDirect(username.clone()));
-                            cx.notify();
-                        }))));
+                let hovered = self.hovered_friend == Some(id);
+                list = list.child(div().id(format!("friend-{id}"))
+                    .h(px(39.)).px_3().rounded_md().cursor_pointer()
+                    .bg(rgb(if hovered { theme_color("sidebar_hover") } else {
+                        theme_color("sidebar")
+                    }))
+                    .flex().items_center().justify_between()
+                    .child(div().text_size(px(14.)).text_color(rgb(theme_color("text")))
+                        .child(name))
+                    .when(hovered, |el| el.child(div().size(px(28.)).rounded_md()
+                        .flex().items_center().justify_center()
+                        .child(svg().path("icons/new-message.svg").size(px(18.))
+                            .text_color(rgb(theme_color("muted"))))
+                        .with_animation(format!("friend-action-{id}"), entrance(120),
+                            |el, t| el.opacity(t))))
+                    .on_hover(cx.listener(move |this, &inside, _, cx| {
+                        let next = if inside { Some(id) } else { None };
+                        if inside || this.hovered_friend == Some(id) {
+                            if this.hovered_friend != next {
+                                this.hovered_friend = next;
+                                cx.notify();
+                            }
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.busy = true;
+                        this.issue(Command::CreateDirect(username.clone()));
+                        cx.notify();
+                    })));
             } else if friend.incoming {
                 list = list.child(div().h(px(34.)).px_3().flex().items_center().justify_between()
                     .child(div().text_sm().child(name))
@@ -830,16 +925,30 @@ impl UTAchat {
             }
         }
         div().w(px(240.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
-            .child(div().h(px(52.)).px_4().border_b_1().border_color(rgb(theme_color("separator")))
+            .child(div().id("dm-sidebar-header").h(px(52.)).px_4()
+                .border_b_1().border_color(rgb(theme_color("separator")))
                 .flex().items_center().justify_between()
-                .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("Direct Messages"))
-                .child(div().id("new-direct").text_xs().text_color(rgb(theme_color("link"))).cursor_pointer()
-                    .flex().items_center().gap_2().child(svg().path("icons/new-message.svg").size(px(16.)).text_color(rgb(theme_color("muted")))).child("NEW")
+                .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD)
+                    .child("Direct Messages"))
+                .when(self.hovered_dm_header, |el| el.child(div().id("new-direct")
+                    .size(px(30.)).rounded_md().cursor_pointer()
+                    .flex().items_center().justify_center()
+                    .child(svg().path("icons/new-message.svg").size(px(18.))
+                        .text_color(rgb(theme_color("text"))))
+                    .tooltip(|window, cx| Tooltip::new("New direct message").build(window, cx))
+                    .with_animation("new-direct-reveal", entrance(120),
+                        |el, t| el.opacity(t))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.modal = Modal::CreateDirect;
                         this.error = None;
                         cx.notify();
                     }))))
+                .on_hover(cx.listener(|this, &inside, _, cx| {
+                    if this.hovered_dm_header != inside {
+                        this.hovered_dm_header = inside;
+                        cx.notify();
+                    }
+                })))
             .child(list)
             .child(self.render_user_panel(cx))
         .into_any_element()
@@ -851,12 +960,31 @@ impl UTAchat {
         let can_create = self.user.as_ref().is_some_and(|user|
             self.members.iter().any(|member| member.user.id == user.id &&
                 matches!(member.role.as_str(), "owner" | "moderator")));
-        let mut channel_list = div().id("channel-scroll").flex_1().min_h_0().overflow_y_scrollbar().px_2().py_4().flex().flex_col().gap_1()
-            .child(div().h(px(30.)).px_2().flex().items_center().justify_between()
-                .child(div().text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(rgb(theme_color("muted"))).child("TEXT CHANNELS"))
-                .when(can_create, |header| header.child(div().id("create-channel-trigger").cursor_pointer()
-                    .text_lg().text_color(rgb(theme_color("muted"))).child("+")
-                    .on_click(cx.listener(|this, _, _, cx| { this.modal = Modal::CreateChannel; this.error = None; cx.notify(); })))));
+        let mut channel_list = div().id("channel-scroll").flex_1().min_h_0()
+            .overflow_y_scrollbar().px_2().py_4().flex().flex_col().gap_1()
+            .child(div().id("text-category-header").h(px(32.)).px_2()
+                .flex().items_center().justify_between()
+                .child(div().text_size(px(11.5)).font_weight(FontWeight::BOLD)
+                    .text_color(rgb(theme_color("muted"))).child("TEXT CHANNELS"))
+                .when(can_create && self.hovered_category, |header| header.child(
+                    div().id("create-channel-trigger").size(px(26.)).rounded_md()
+                        .cursor_pointer().flex().items_center().justify_center()
+                        .text_size(px(21.)).text_color(rgb(theme_color("text")))
+                        .child("+")
+                        .tooltip(|window, cx| Tooltip::new("Create channel").build(window, cx))
+                        .with_animation("channel-add-reveal", entrance(120),
+                            |el, t| el.opacity(t))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.modal = Modal::CreateChannel;
+                            this.error = None;
+                            cx.notify();
+                        }))))
+                .on_hover(cx.listener(|this, &inside, _, cx| {
+                    if this.hovered_category != inside {
+                        this.hovered_category = inside;
+                        cx.notify();
+                    }
+                })));
         for channel in &self.channels {
             let id = channel.id;
             let active = Some(id) == self.selected_channel;
@@ -879,10 +1007,32 @@ impl UTAchat {
                     } else {
                         FontWeight::NORMAL
                     }).child(channel.name.clone()))
-                    .when(unread > 0, |el| el.child(div().ml_auto().px_2().py_1().rounded_lg()
-                        .bg(rgb(theme_color("danger_text"))).text_xs()
-                        .text_color(rgb(theme_color("rail"))).font_weight(FontWeight::BOLD)
-                        .child(if unread > 99 { "99+".to_owned() } else { unread.to_string() })))
+                    .when(unread > 0 && !(can_create && hovered), |el| el.child(
+                        div().ml_auto().px_2().py_1().rounded_lg()
+                            .bg(rgb(theme_color("danger_text"))).text_xs()
+                            .text_color(rgb(theme_color("rail"))).font_weight(FontWeight::BOLD)
+                            .child(if unread > 99 { "99+".to_owned() } else { unread.to_string() })))
+                    .when(can_create && hovered, |el| el.child(
+                        div().id(format!("channel-settings-{id}"))
+                            .ml_auto().size(px(27.)).rounded_md()
+                            .cursor_pointer().flex().items_center().justify_center()
+                            .child(svg().path("icons/settings.svg").size(px(17.))
+                                .text_color(rgb(theme_color("muted"))))
+                            .tooltip(|window, cx| Tooltip::new("Edit channel").build(window, cx))
+                            .with_animation(format!("channel-settings-reveal-{id}"),
+                                entrance(120), |el, t| el.opacity(t))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(channel) = this.channels.iter().find(|channel| channel.id == id) {
+                                    let name = channel.name.clone();
+                                    this.rename_input.update(cx,
+                                        |input, cx| input.set_value(name, window, cx));
+                                    this.renaming_channel = Some(id);
+                                    this.modal = Modal::RenameChannel;
+                                    this.error = None;
+                                    cx.notify();
+                                }
+                            }))))
                     .on_hover(cx.listener(move |this, &inside, _, cx| {
                         if inside {
                             this.hovered_channel = Some(id);
@@ -902,36 +1052,76 @@ impl UTAchat {
                         ))))
             );
         }
-        div().w(px(240.)).h_full().flex().flex_col().bg(rgb(theme_color("sidebar")))
-            .child(div().h(px(52.)).px_4().border_b_1().border_color(rgb(theme_color("separator")))
-                .flex().items_center().justify_between()
-                .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(server_name))
-                .child(div().id("invite-trigger").cursor_pointer().flex().items_center().gap_2()
-                    .text_size(px(13.)).text_color(rgb(theme_color("muted")))
-                    .child(svg().path("icons/user-plus.svg").size(px(17.))
-                        .text_color(rgb(theme_color("muted"))))
-                    .child("Invite").on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(server) = this.selected_server {
-                            this.busy = true;
-                            this.issue(Command::FetchInvite(server));
-                        }
+        let can_rename_server = self.selected_server.and_then(|id|
+            self.servers.iter().find(|server| server.id == id))
+            .zip(self.user.as_ref())
+            .is_some_and(|(server, user)| server.owner_id == user.id);
+        div().relative().w(px(240.)).h_full().flex().flex_col()
+            .bg(rgb(theme_color("sidebar")))
+            .child(div().id("server-menu-trigger").h(px(52.)).px_4()
+                .border_b_1().border_color(rgb(theme_color("separator")))
+                .cursor_pointer().flex().items_center().justify_between()
+                .bg(rgb(if self.hovered_server_header {
+                    theme_color("sidebar_hover")
+                } else {
+                    theme_color("sidebar")
+                }))
+                .child(div().min_w_0().flex_1().text_size(px(16.))
+                    .font_weight(FontWeight::BOLD).child(server_name))
+                .child(svg().path("icons/chevron-down.svg").size(px(19.))
+                    .text_color(rgb(theme_color("muted"))))
+                .on_hover(cx.listener(|this, &inside, _, cx| {
+                    if this.hovered_server_header != inside {
+                        this.hovered_server_header = inside;
                         cx.notify();
-                    })))
-                .when(can_create, |el| el.child(div().id("rename-server-trigger")
-                    .size(px(26.)).rounded_md().cursor_pointer()
-                    .flex().items_center().justify_center()
-                    .child(svg().path("icons/settings.svg").size(px(16.))
-                        .text_color(rgb(theme_color("muted"))))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let name = this.selected_server.and_then(|id|
-                            this.servers.iter().find(|server| server.id == id))
-                            .map(|server| server.name.clone()).unwrap_or_default();
-                        this.rename_input.update(cx, |input, cx| input.set_value(name, window, cx));
-                        this.modal = Modal::RenameServer;
-                        cx.notify();
-                    })))))
+                    }
+                }))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.show_server_menu = !this.show_server_menu;
+                    cx.notify();
+                })))
             .child(channel_list)
             .child(self.render_user_panel(cx))
+            .when(self.show_server_menu, |sidebar| sidebar.child(
+                div().id("server-dropdown").absolute().top(px(55.)).left(px(8.))
+                    .w(px(224.)).p_2().rounded_lg()
+                    .bg(rgb(theme_color("toolbar_bg")))
+                    .border_1().border_color(rgb(theme_color("border")))
+                    .flex().flex_col().gap_1()
+                    .child(div().id("server-menu-invite").h(px(38.)).px_3()
+                        .rounded_md().cursor_pointer().flex().items_center().gap_3()
+                        .child(svg().path("icons/user-plus.svg").size(px(17.))
+                            .text_color(rgb(theme_color("link"))))
+                        .child(div().text_size(px(13.)).text_color(rgb(theme_color("link")))
+                            .font_weight(FontWeight::SEMIBOLD).child("Invite people"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_server_menu = false;
+                            if let Some(server) = this.selected_server {
+                                this.busy = true;
+                                this.issue(Command::FetchInvite(server));
+                            }
+                            cx.notify();
+                        })))
+                    .when(can_rename_server, |menu| menu.child(
+                        div().id("server-menu-rename").h(px(38.)).px_3()
+                            .rounded_md().cursor_pointer().flex().items_center().gap_3()
+                            .child(svg().path("icons/settings.svg").size(px(17.))
+                                .text_color(rgb(theme_color("muted"))))
+                            .child(div().text_size(px(13.)).child("Server settings"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_server_menu = false;
+                                let name = this.selected_server.and_then(|id|
+                                    this.servers.iter().find(|server| server.id == id))
+                                    .map(|server| server.name.clone()).unwrap_or_default();
+                                this.rename_input.update(cx, |input, cx|
+                                    input.set_value(name, window, cx));
+                                this.modal = Modal::RenameServer;
+                                this.error = None;
+                                cx.notify();
+                            }))))
+                    .with_animation("server-menu-reveal", entrance(145),
+                        |el, t| el.opacity(t).mt(px((1.0 - t) * 7.0)))
+            ))
             .into_any_element()
     }
 
@@ -1021,23 +1211,27 @@ impl UTAchat {
                         .flex().items_center().justify_center()
                         .child(svg().path("icons/search.svg").size(px(20.))
                             .text_color(rgb(theme_color("muted"))))
+                        .tooltip(|window, cx| Tooltip::new("Search messages").build(window, cx))
                         .on_click(cx.listener(|this, _, _, cx| this.open_search(cx)))))
                     .when(!self.direct_mode, |el| el.child(div().id("pins-trigger")
                         .size(px(36.)).rounded_md().cursor_pointer()
                         .flex().items_center().justify_center()
                         .child(svg().path("icons/pin.svg").size(px(20.))
                             .text_color(rgb(theme_color("muted"))))
+                        .tooltip(|window, cx| Tooltip::new("Pinned messages").build(window, cx))
                         .on_click(cx.listener(|this, _, _, cx| this.open_pins(cx)))))
                     .child(div().id("inbox-trigger").size(px(36.)).rounded_md().cursor_pointer()
                         .flex().items_center().justify_center()
                         .child(svg().path("icons/inbox.svg").size(px(20.))
                             .text_color(rgb(theme_color("muted"))))
+                        .tooltip(|window, cx| Tooltip::new("Inbox").build(window, cx))
                         .on_click(cx.listener(|this, _, _, cx| this.open_inbox(cx))))
                     .when(!self.direct_mode, |el| el.child(div().id("members-toggle").size(px(36.))
                         .cursor_pointer().rounded_md().flex().items_center().justify_center()
                         .bg(rgb(if self.show_members { theme_color("selection") } else { theme_color("header") }))
                         .child(svg().path("icons/users.svg").size(px(20.))
                             .text_color(rgb(if self.show_members { theme_color("text") } else { theme_color("muted") })))
+                        .tooltip(|window, cx| Tooltip::new("Toggle member list").build(window, cx))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.show_members = !this.show_members;
                             cx.notify();
@@ -1054,15 +1248,29 @@ impl UTAchat {
                             this.reply_to = None;
                             cx.notify();
                         })))))
-                .child(div().h(px(52.)).bg(rgb(theme_color("input_bg"))).rounded_md()
+                .child(div().id("message-composer").h(px(52.))
+                    .bg(rgb(theme_color("input_bg"))).rounded_md()
                     .pl_4().pr_2().flex().items_center().gap_3()
                     .child(div().flex_1().min_w_0().text_size(px(15.))
                         .child(Input::new(&self.composer).appearance(false).bordered(false).w_full()))
-                    .child(div().id("send-trigger").size(px(36.)).rounded_md()
-                        .bg(rgb(theme_color("input_bg")))
-                        .cursor_pointer().flex().items_center().justify_center()
-                        .child(svg().path("icons/send.svg").size(px(18.)).text_color(rgb(theme_color("muted"))))
-                        .on_click(cx.listener(|this, _, window, cx| this.send_message(window, cx))))));
+                    .when(self.hovered_composer, |el| el.child(
+                        div().id("send-trigger").size(px(36.)).rounded_md()
+                            .cursor_pointer().flex().items_center().justify_center()
+                            .child(svg().path("icons/send.svg").size(px(19.))
+                                .text_color(rgb(theme_color("muted"))))
+                            .tooltip(|window, cx| Tooltip::new("Send message").build(window, cx))
+                            .with_animation("send-on-hover", entrance(125),
+                                |el, t| el.opacity(t))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.send_message(window, cx);
+                            }))))
+                    .on_hover(cx.listener(|this, &inside, _, cx| {
+                        if this.hovered_composer != inside {
+                            this.hovered_composer = inside;
+                            cx.notify();
+                        }
+                    }))));
         }
         center.into_any_element()
     }
@@ -1083,23 +1291,59 @@ impl UTAchat {
                 let avatar = initials(&username);
                 let color = avatar_color(member.user.id);
                 let target = member.clone();
-                let can_manage = self.user.as_ref().is_some_and(|user|
-                    self.members.iter().any(|item| item.user.id == user.id &&
-                        matches!(item.role.as_str(), "owner" | "moderator"))) &&
-                    self.user.as_ref().is_some_and(|user| user.id != member.user.id);
-                body = body.child(div().id(format!("member-{}", member.user.id))
+                let member_id = member.user.id;
+                let my_role = self.user.as_ref().and_then(|user|
+                    self.members.iter().find(|item| item.user.id == user.id))
+                    .map(|item| item.role.as_str()).unwrap_or("member");
+                let can_manage = self.user.as_ref().is_some_and(|user| user.id != member_id)
+                    && (my_role == "owner" && member.role != "owner"
+                        || my_role == "moderator" && member.role == "member");
+                let hovered = self.hovered_member == Some(member_id);
+                let background = if hovered {
+                    theme_color("sidebar_hover")
+                } else {
+                    theme_color("member_bg")
+                };
+                body = body.child(div().id(format!("member-{member_id}"))
                     .h(px(43.)).px_2().rounded_md().flex().items_center().gap_3()
+                    .bg(rgb(background))
                     .when(can_manage, |el| el.cursor_pointer())
                     .child(div().size(px(31.)).rounded_full().bg(rgb(color))
                         .flex().items_center().justify_center().text_sm()
                         .font_weight(FontWeight::BOLD).child(avatar))
                     .child(div().text_sm().text_color(rgb(theme_color("text")))
                         .child(username))
+                    .when(can_manage && hovered, |el| el.child(
+                        div().ml_auto().size(px(26.)).rounded_md()
+                            .flex().items_center().justify_center()
+                            .child(svg().path("icons/ellipsis.svg").size(px(17.))
+                                .text_color(rgb(theme_color("muted"))))
+                            .tooltip(|window, cx| Tooltip::new("Manage member").build(window, cx))
+                            .with_animation(format!("member-action-reveal-{member_id}"),
+                                entrance(120), |el, t| el.opacity(t))))
+                    .on_hover(cx.listener(move |this, &inside, _, cx| {
+                        let next = if inside { Some(member_id) } else { None };
+                        if inside || this.hovered_member == Some(member_id) {
+                            if this.hovered_member != next {
+                                this.hovered_member = next;
+                                cx.notify();
+                            }
+                        }
+                    }))
                     .when(can_manage, |el| el.on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_member = Some(target.clone());
                         this.modal = Modal::MemberActions;
                         cx.notify();
-                    }))));
+                    })))
+                    .with_animation(format!("member-hover-{member_id}-{hovered}"),
+                        entrance(140), move |el, t| el.bg(rgb(blend_color(
+                            if hovered { theme_color("member_bg") } else {
+                                theme_color("sidebar_hover")
+                            },
+                            background,
+                            t
+                        )))));
+
             }
         }
         body.into_any_element()
@@ -1514,7 +1758,7 @@ impl UTAchat {
                         }
                     }
                     Modal::RenameChannel => {
-                        if let (Some(server),Some(channel))=(this.selected_server,this.selected_channel) {
+                        if let (Some(server),Some(channel))=(this.selected_server,this.renaming_channel) {
                             let name=this.rename_input.read(cx).value().to_string();
                             this.busy=true;
                             this.issue(Command::RenameChannel {server,channel,name});
@@ -1670,11 +1914,12 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
         .cursor_pointer().flex().items_center().justify_center()
         .child(svg().path("icons/ellipsis.svg").size(px(19.))
             .text_color(rgb(theme_color("text"))))
+        .tooltip(|window, cx| Tooltip::new("More actions").build(window, cx))
         .on_click(cx.listener(move |this, _, _, cx| {
             this.action_message = if this.action_message == Some(id) { None } else { Some(id) };
             cx.notify();
         }));
-    let mut toolbar = div().absolute().top(px(-14.)).right(px(14.))
+    let mut toolbar = div().absolute().top(px(2.)).right(px(14.))
         .px_1().py_1().rounded_md().border_1().border_color(rgb(theme_color("border")))
         .bg(rgb(theme_color("toolbar_bg")))
         .flex().items_center().gap_1()
@@ -1682,6 +1927,7 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
             .cursor_pointer().flex().items_center().justify_center()
             .child(svg().path("icons/reply.svg").size(px(18.))
                 .text_color(rgb(theme_color("muted"))))
+            .tooltip(|window, cx| Tooltip::new("Reply").build(window, cx))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.reply_to = Some(id);
                 this.action_message = None;
@@ -1693,6 +1939,7 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
             .flex().items_center().justify_center()
             .child(svg().path("icons/reaction.svg").size(px(18.))
                 .text_color(rgb(theme_color("muted"))))
+            .tooltip(|window, cx| Tooltip::new("Add reaction").build(window, cx))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.issue(Command::React {
                     channel, message: id, kind: "like".to_owned()
