@@ -57,13 +57,13 @@ pub fn initialize() -> Result<FileAssets> {
         }
         colors.insert(key, u32::from_str_radix(hex, 16)?);
     }
-    for name in ["rail", "sidebar", "content", "header", "member_bg", "input_bg", "text", "muted", "subtle", "accent", "line", "danger_text", "auth_link", "server_inactive", "server_action_bg", "server_add", "selection", "link", "friend_accept", "separator", "profile_bar", "header_separator", "online", "reconnecting", "owner_avatar", "member_avatar", "join_button", "overlay", "toast_bg", "delete_action", "message_text", "avatar_0", "avatar_1", "avatar_2", "avatar_3", "avatar_4", "avatar_5", "avatar_6", "avatar_7"] {
+    for name in ["rail", "sidebar", "content", "header", "member_bg", "input_bg", "text", "muted", "subtle", "accent", "line", "danger_text", "auth_link", "server_inactive", "server_action_bg", "server_add", "selection", "link", "friend_accept", "separator", "profile_bar", "header_separator", "online", "reconnecting", "owner_avatar", "member_avatar", "join_button", "overlay", "toast_bg", "delete_action", "message_text", "avatar_0", "avatar_1", "avatar_2", "avatar_3", "avatar_4", "avatar_5", "avatar_6", "avatar_7", "sidebar_hover", "message_hover", "toolbar_bg", "pressed", "border", "status_idle", "status_dnd", "status_offline"] {
         if !colors.contains_key(name) {
             return Err(io::Error::other(format!("Missing theme color {name}")).into());
         }
     }
     let assets = folder.join("assets");
-    for name in ["icons/utachat-mark.svg", "icons/send.svg", "icons/check.svg", "icons/compass.svg", "icons/users.svg", "icons/ellipsis.svg", "icons/new-message.svg", "icons/user-plus.svg", "icons/search.svg", "icons/pin.svg", "icons/inbox.svg", "icons/settings.svg", "icons/checkmark.svg"] {
+    for name in ["icons/utachat-mark.svg", "icons/send.svg", "icons/check.svg", "icons/compass.svg", "icons/users.svg", "icons/ellipsis.svg", "icons/new-message.svg", "icons/user-plus.svg", "icons/search.svg", "icons/pin.svg", "icons/inbox.svg", "icons/settings.svg", "icons/checkmark.svg", "icons/reply.svg", "icons/reaction.svg"] {
         if !assets.join(name).is_file() {
             return Err(io::Error::other(format!("Missing application resource: assets/{name}")).into());
         }

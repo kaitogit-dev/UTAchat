@@ -214,13 +214,17 @@ jobs:
             "dist/assets/icons/inbox.svg",
             "dist/assets/icons/settings.svg",
             "dist/assets/icons/checkmark.svg",
+            "dist/assets/icons/reply.svg",
+            "dist/assets/icons/reaction.svg",
             "dist/assets/icons/check.svg"
           )
           foreach ($file in $required) {
             if (-not (Test-Path $file)) { throw "Missing release file: $file" }
           }
           $theme = Get-Content dist/themes/dark.json -Raw | ConvertFrom-Json
-          if (-not $theme.colors.accent) { throw "The external theme is incomplete" }
+          foreach ($key in @("accent","sidebar_hover","message_hover","toolbar_bg","status_idle","status_dnd","status_offline")) {
+            if (-not $theme.colors.$key) { throw "Missing theme color: $key" }
+          }
           $icons = @(Get-ChildItem dist/assets/icons/*.svg)
           if ($icons.Count -lt 100) { throw "GPUI icons were not unpacked" }
           Write-Host "UTAchat Windows distribution: $($icons.Count) external SVG icons"
