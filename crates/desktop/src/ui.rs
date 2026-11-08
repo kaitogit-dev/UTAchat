@@ -31,6 +31,7 @@ enum Modal {
     KickMember,
     BanMember,
     RemoveFriend,
+    UserCard,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,8 @@ pub struct UTAchat {
     friends: Vec<Friend>,
     friends_view: FriendsView,
     selected_friend: Option<Uuid>,
+    opened_profile: Option<UserProfile>,
+    opened_profile_user: Option<Uuid>,
     profile: Option<UserProfile>,
     search_results: Vec<SearchHit>,
     pinned_messages: Vec<ChatMessage>,
@@ -141,6 +144,7 @@ impl UTAchat {
             servers: Vec::new(), channels: Vec::new(), members: Vec::new(), messages: Vec::new(),
             directs: Vec::new(), friends: Vec::new(), direct_mode: true,
             friends_view: FriendsView::All, selected_friend: None,
+            opened_profile: None, opened_profile_user: None,
             profile: None, search_results: Vec::new(), pinned_messages: Vec::new(),
             notifications: Vec::new(), unreads: HashMap::new(),
             profile_status: "online".to_owned(), selected_member: None,
@@ -241,6 +245,17 @@ impl UTAchat {
         self.messages.clear();
         self.has_older = false;
         self.issue(Command::SelectServer(server));
+        cx.notify();
+    }
+
+    fn open_user_card(&mut self, user: Uuid, cx: &mut Context<Self>) {
+        self.opened_profile = None;
+        self.opened_profile_user = Some(user);
+        self.selected_member = self.members.iter()
+            .find(|member| member.user.id == user).cloned();
+        self.modal = Modal::UserCard;
+        self.error = None;
+        self.issue(Command::OpenUserProfile(user));
         cx.notify();
     }
 
@@ -374,6 +389,8 @@ impl UTAchat {
                     self.friends.clear();
                     self.selected_friend = None;
                     self.friends_view = FriendsView::All;
+                    self.opened_profile = None;
+                    self.opened_profile_user = None;
                     self.profile = None;
                     self.unreads.clear();
                     self.notifications.clear();
@@ -461,6 +478,11 @@ impl UTAchat {
                 }
                 UiEvent::Profile(profile) => {
                     self.profile = Some(profile);
+                }
+                UiEvent::OtherProfile(profile) => {
+                    if self.opened_profile_user == Some(profile.id) {
+                        self.opened_profile = Some(profile);
+                    }
                 }
                 UiEvent::ProfileSaved(profile) => {
                     self.profile_status = profile.status.clone();
@@ -851,19 +873,29 @@ impl UTAchat {
                         .font_weight(FontWeight::BOLD)
                         .child(self.friends.iter().filter(|friend| friend.status != "accepted" && friend.incoming).count().to_string())))
                 .on_click(cx.listener(|this, _, _, cx| this.enter_direct(cx))))
-            .child(div().h(px(38.)).px_3().pt_2().flex().items_center().justify_between()
+            .child(div().id("dm-category-header").h(px(38.)).px_3().pt_2()
+                .flex().items_center().justify_between()
                 .child(div().text_size(px(11.5)).font_weight(FontWeight::BOLD)
                     .text_color(rgb(theme_color("muted"))).child("DIRECT MESSAGES"))
-                .child(div().id("new-direct").size(px(29.)).rounded_md()
-                    .cursor_pointer().flex().items_center().justify_center()
-                    .child(svg().path("icons/new-message.svg").size(px(18.))
-                        .text_color(rgb(theme_color("muted"))))
-                    .tooltip(|window, cx| Tooltip::new("New direct message").build(window, cx))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.modal = Modal::CreateDirect;
-                        this.error = None;
+                .when(self.hovered_dm_header, |el| el.child(
+                    div().id("new-direct").size(px(29.)).rounded_md()
+                        .cursor_pointer().flex().items_center().justify_center()
+                        .child(svg().path("icons/new-message.svg").size(px(18.))
+                            .text_color(rgb(theme_color("muted"))))
+                        .tooltip(|window, cx| Tooltip::new("New direct message").build(window, cx))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.modal = Modal::CreateDirect;
+                            this.error = None;
+                            cx.notify();
+                        }))
+                        .with_animation("new-direct-reveal", entrance(120),
+                            |el, t| el.opacity(t))))
+                .on_hover(cx.listener(|this, &inside, _, cx| {
+                    if this.hovered_dm_header != inside {
+                        this.hovered_dm_header = inside;
                         cx.notify();
-                    }))));
+                    }
+                })));
         for thread in &self.directs {
             let id = thread.id;
             let active = self.direct_mode && self.selected_channel == Some(id);
@@ -912,16 +944,7 @@ impl UTAchat {
                 .border_b_1().border_color(rgb(theme_color("separator")))
                 .flex().items_center().justify_between()
                 .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD)
-                    .child("Messages"))
-                .child(div().id("new-direct-header").size(px(30.))
-                    .cursor_pointer().rounded_md().flex().items_center().justify_center()
-                    .child(svg().path("icons/new-message.svg").size(px(18.))
-                        .text_color(rgb(theme_color("muted"))))
-                    .tooltip(|window, cx| Tooltip::new("New direct message").build(window, cx))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.modal = Modal::CreateDirect;
-                        cx.notify();
-                    }))))
+                    .child("Messages")))
             .child(direct_list)
             .child(self.render_user_panel(cx))
             .into_any_element()
@@ -1025,7 +1048,7 @@ impl UTAchat {
                     .flex().items_center().justify_center()
                     .child(svg().path("icons/close.svg").size(px(18.))
                         .text_color(rgb(theme_color("muted"))))
-                    .tooltip(|window, cx| Tooltip::new(if incoming {
+                    .tooltip(move |window, cx| Tooltip::new(if incoming {
                         "Decline request"
                     } else {
                         "Cancel request"
@@ -1474,14 +1497,7 @@ impl UTAchat {
                 let username = member.user.username.clone();
                 let avatar = initials(&username);
                 let color = avatar_color(member.user.id);
-                let target = member.clone();
                 let member_id = member.user.id;
-                let my_role = self.user.as_ref().and_then(|user|
-                    self.members.iter().find(|item| item.user.id == user.id))
-                    .map(|item| item.role.as_str()).unwrap_or("member");
-                let can_manage = self.user.as_ref().is_some_and(|user| user.id != member_id)
-                    && (my_role == "owner" && member.role != "owner"
-                        || my_role == "moderator" && member.role == "member");
                 let hovered = self.hovered_member == Some(member_id);
                 let background = if hovered {
                     theme_color("sidebar_hover")
@@ -1491,18 +1507,18 @@ impl UTAchat {
                 body = body.child(div().id(format!("member-{member_id}"))
                     .h(px(43.)).px_2().rounded_md().flex().items_center().gap_3()
                     .bg(rgb(background))
-                    .when(can_manage, |el| el.cursor_pointer())
+                    .cursor_pointer()
                     .child(div().size(px(31.)).rounded_full().bg(rgb(color))
                         .flex().items_center().justify_center().text_sm()
                         .font_weight(FontWeight::BOLD).child(avatar))
                     .child(div().text_sm().text_color(rgb(theme_color("text")))
                         .child(username))
-                    .when(can_manage && hovered, |el| el.child(
+                    .when(hovered, |el| el.child(
                         div().id(format!("member-action-icon-{member_id}")).ml_auto().size(px(26.)).rounded_md()
                             .flex().items_center().justify_center()
                             .child(svg().path("icons/ellipsis.svg").size(px(17.))
                                 .text_color(rgb(theme_color("muted"))))
-                            .tooltip(|window, cx| Tooltip::new("Manage member").build(window, cx))
+                            .tooltip(|window, cx| Tooltip::new("View profile").build(window, cx))
                             .with_animation(format!("member-action-reveal-{member_id}"),
                                 entrance(120), |el, t| el.opacity(t))))
                     .on_hover(cx.listener(move |this, &inside, _, cx| {
@@ -1514,11 +1530,9 @@ impl UTAchat {
                             }
                         }
                     }))
-                    .when(can_manage, |el| el.on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected_member = Some(target.clone());
-                        this.modal = Modal::MemberActions;
-                        cx.notify();
-                    })))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_user_card(member_id, cx);
+                    }))
                     .with_animation(format!("member-hover-{member_id}-{hovered}"),
                         entrance(140), move |el, t| el.bg(rgb(blend_color(
                             if hovered { theme_color("member_bg") } else {
@@ -1831,6 +1845,96 @@ impl UTAchat {
             )).into_any_element()
     }
 
+    fn render_user_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut panel = div().w(px(430.)).rounded_lg()
+            .bg(rgb(theme_color("sidebar")))
+            .border_1().border_color(rgb(theme_color("border")))
+            .flex().flex_col()
+            .child(div().h(px(82.)).px_4()
+                .bg(rgb(theme_color("selection")))
+                .flex().items_start().justify_end().pt_3()
+                .child(div().id("close-user-card").size(px(30.)).rounded_md()
+                    .cursor_pointer().flex().items_center().justify_center()
+                    .bg(rgb(theme_color("toolbar_bg")))
+                    .child(svg().path("icons/close.svg").size(px(17.))
+                        .text_color(rgb(theme_color("text"))))
+                    .tooltip(|window, cx| Tooltip::new("Close profile").build(window, cx))
+                    .on_click(cx.listener(|this, _, _, cx| this.dismiss_modal(cx)))));
+        if let Some(profile) = self.opened_profile.as_ref() {
+            let username = profile.username.clone();
+            let own = self.user.as_ref().is_some_and(|user| user.id == profile.id);
+            let role = self.selected_member.as_ref()
+                .filter(|member| member.user.id == profile.id)
+                .map(|member| member.role.as_str());
+            let my_role = self.user.as_ref().and_then(|user| self.members.iter()
+                .find(|member| member.user.id == user.id))
+                .map(|member| member.role.as_str()).unwrap_or("member");
+            let can_manage = role.is_some_and(|target|
+                !own && (my_role == "owner" && target != "owner" ||
+                    my_role == "moderator" && target == "member"));
+            panel = panel.child(div().px_6().pb_6().flex().flex_col().gap_4()
+                .child(div().relative().h(px(30.))
+                    .child(div().absolute().top(px(-24.)).left(px(0.))
+                        .size(px(62.)).rounded_full()
+                        .border_2().border_color(rgb(theme_color("sidebar")))
+                        .bg(rgb(avatar_color(profile.id)))
+                        .flex().items_center().justify_center()
+                        .text_size(px(21.)).font_weight(FontWeight::BOLD)
+                        .child(initials(&username))))
+                .child(div().flex().flex_col().gap_1()
+                    .child(div().text_size(px(21.)).font_weight(FontWeight::BOLD)
+                        .child(username.clone()))
+                    .when_some(role, |el, role| el.child(
+                        div().text_size(px(12.)).text_color(rgb(theme_color("muted")))
+                            .child(match role {
+                                "owner" => "Server owner",
+                                "moderator" => "Moderator",
+                                _ => "Member",
+                            }))))
+                .when(!profile.bio.is_empty(), |el| el.child(
+                    div().pt_3().border_t_1().border_color(rgb(theme_color("line")))
+                        .flex().flex_col().gap_2()
+                        .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD)
+                            .text_color(rgb(theme_color("muted")))
+                            .child("ABOUT ME"))
+                        .child(div().text_size(px(13.))
+                            .text_color(rgb(theme_color("message_text")))
+                            .child(profile.bio.clone()))))
+                .child(div().flex().items_center().gap_2()
+                    .when(!own, |el| el.child(
+                        div().id("profile-message").h(px(38.)).flex_1()
+                            .rounded_md().bg(rgb(theme_color("accent")))
+                            .cursor_pointer().flex().items_center().justify_center()
+                            .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
+                            .child("Message")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.issue(Command::CreateDirect(username.clone()));
+                                this.busy = true;
+                                this.modal = Modal::None;
+                                cx.notify();
+                            }))))
+                    .when(can_manage, |el| el.child(
+                        div().id("profile-manage").h(px(38.)).px_4()
+                            .rounded_md().bg(rgb(theme_color("input_bg")))
+                            .cursor_pointer().flex().items_center().justify_center()
+                            .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
+                            .child("Manage")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.modal = Modal::MemberActions;
+                                cx.notify();
+                            }))))));
+        } else {
+            panel = panel.child(div().h(px(180.)).flex().items_center().justify_center()
+                .text_size(px(13.)).text_color(rgb(theme_color("muted")))
+                .child("Loading profile"));
+        }
+        div().absolute().inset_0().bg(rgba(theme_color("overlay")))
+            .flex().items_center().justify_center()
+            .child(panel.with_animation("user-card-enter", entrance(170),
+                |el, t| el.opacity(t).mt(px((1. - t) * 10.))))
+            .into_any_element()
+    }
+
     fn render_modal(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.modal {
             Modal::Search => return self.render_search_panel(cx),
@@ -1838,6 +1942,7 @@ impl UTAchat {
             Modal::Inbox => return self.render_inbox_panel(cx),
             Modal::Profile => return self.render_profile_panel(cx),
             Modal::MemberActions => return self.render_member_actions(cx),
+            Modal::UserCard => return self.render_user_card(cx),
             _ => {}
         }
         let (title, input, action) = match self.modal {
@@ -1854,7 +1959,7 @@ impl UTAchat {
             Modal::RemoveFriend => ("Remove friend", None, "REMOVE"),
             Modal::RenameServer => ("Rename server", Some(&self.rename_input), "SAVE"),
             Modal::RenameChannel => ("Rename channel", Some(&self.rename_input), "SAVE"),
-            Modal::Search | Modal::Pinned | Modal::Inbox | Modal::Profile | Modal::MemberActions | Modal::None => ("", None, ""),
+            Modal::Search | Modal::Pinned | Modal::Inbox | Modal::Profile | Modal::MemberActions | Modal::UserCard | Modal::None => ("", None, ""),
         };
         let mut card = div().w(px(440.)).bg(rgb(theme_color("sidebar"))).rounded_lg().border_1().border_color(rgb(theme_color("border"))).p_6().flex().flex_col().gap_5()
             .child(div().flex().items_center().justify_between()
@@ -1971,7 +2076,7 @@ impl UTAchat {
                             this.issue(Command::RemoveFriend(user));
                         }
                     }
-                    Modal::Search | Modal::Pinned | Modal::Inbox | Modal::Profile | Modal::MemberActions | Modal::None => {}
+                    Modal::Search | Modal::Pinned | Modal::Inbox | Modal::Profile | Modal::MemberActions | Modal::UserCard | Modal::None => {}
                 }
                 cx.notify();
             })));
@@ -2065,6 +2170,7 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
     let channel = message.channel_id;
     let id = message.id;
     let is_author = current_user == Some(message.author.id);
+    let author_id = message.author.id;
     let mut actions = div().absolute().top(px(39.)).right(px(16.))
         .w(px(196.)).p_2().rounded_lg()
         .bg(rgb(theme_color("toolbar_bg")))
@@ -2150,7 +2256,12 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
     toolbar = toolbar.child(menu_button);
     let mut body = div().flex_1().min_w_0().flex().flex_col().gap_1()
         .when(!continuation, |el| el.child(div().flex().items_center().gap_3()
-            .child(div().text_size(px(14.5)).font_weight(FontWeight::BOLD).child(message.author.username.clone()))
+            .child(div().id(format!("message-author-{id}")).cursor_pointer()
+                .text_size(px(14.5)).font_weight(FontWeight::BOLD)
+                .child(message.author.username.clone())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_user_card(author_id, cx);
+                })))
             .child(div().text_size(px(11.5)).text_color(rgb(theme_color("subtle"))).child(message.created_at.with_timezone(&chrono::Local).format("%d %b %Y, %H:%M").to_string()))
             .when(message.edited_at.is_some(), |el| el.child(div().text_xs().text_color(rgb(theme_color("subtle"))).child("edited")))
             .when(message.pinned_at.is_some(), |el| el.child(div().text_xs()

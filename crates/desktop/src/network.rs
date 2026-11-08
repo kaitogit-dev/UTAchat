@@ -34,6 +34,7 @@ pub enum Command {
     DeleteMessage { channel: Uuid, message: Uuid, direct: bool },
     React { channel: Uuid, message: Uuid, kind: String },
     FetchProfile,
+    OpenUserProfile(Uuid),
     UpdateProfile { bio: String, status: String },
     Search { server: Uuid, query: String },
     FetchPins(Uuid),
@@ -70,6 +71,7 @@ pub enum UiEvent {
     MessageDeleted { channel: Uuid, message: Uuid },
     MessageReactions(Uuid),
     Profile(UserProfile),
+    OtherProfile(UserProfile),
     ProfileSaved(UserProfile),
     LocatedChannel(Channel),
     SearchResults(Vec<SearchHit>),
@@ -380,6 +382,10 @@ async fn execute(command: Command, client: &Client, base: &str, token: &str, eve
         Command::FetchProfile => {
             let profile = get::<UserProfile>(client, base, "/v1/me/profile", token).await?;
             let _ = events.send(UiEvent::Profile(profile));
+        }
+        Command::OpenUserProfile(user) => {
+            let profile = get::<UserProfile>(client, base, &format!("/v1/users/{user}"), token).await?;
+            let _ = events.send(UiEvent::OtherProfile(profile));
         }
         Command::UpdateProfile { bio, status } => {
             let profile = request::<UserProfile>(client, Method::PATCH, &format!("{base}/v1/me/profile"), Some(token), Some(&ProfileUpdate { bio, status })).await?;
