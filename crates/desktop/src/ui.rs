@@ -1753,7 +1753,7 @@ fn render_message(message: &ChatMessage, continuation: bool, current_user: Optio
 }
 
 fn entrance(milliseconds: u64) -> Animation {
-    Animation::new(Duration::from_millis(milliseconds)).with_easing(ease_out_quint)
+    Animation::new(Duration::from_millis(milliseconds)).with_easing(ease_out_quint())
 }
 
 fn blend_color(from: u32, to: u32, amount: f32) -> u32 {
